@@ -52,7 +52,8 @@ self.addEventListener('activate', (event) => {
 function fetchWithTimeout(request, ms) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('timeout')), ms);
-    fetch(request).then(
+    // ブラウザの一時保存を使わず、毎回「新しくなっていないか」をサーバーに確かめる（画像を差しかえたときもすぐ反映される）
+    fetch(request.url, { cache: 'no-cache', credentials: 'same-origin' }).then(
       (res) => { clearTimeout(timer); resolve(res); },
       (err) => { clearTimeout(timer); reject(err); }
     );
