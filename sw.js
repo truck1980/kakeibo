@@ -33,6 +33,7 @@ const FILES = [
   'design/images/icon-download.svg',
   'design/images/icon-upload.svg',
   'design/images/icon-table.svg',
+  'design/images/icon-card.svg',
 ];
 const NETWORK_WAIT_MS = 3000;
 

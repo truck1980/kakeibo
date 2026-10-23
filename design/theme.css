@@ -5,37 +5,36 @@
    ・色を変える   → 下の「基本の色」「カテゴリの色」の #xxxxxx を書きかえる
    ・文字を変える → 「文字」の欄を書きかえる
    ・画像を変える → images フォルダの同じ名前のファイルを差しかえる
-   ※ ホーム画面アイコンと起動画面の色だけは manifest.json にも書いてあります。
+   ※ アプリとして入れたときのアイコンと起動画面の色だけは manifest.json にも書いてあります。
    ========================================================= */
 
 :root {
   /* ---- 基本の色 ---- */
   --color-bg:            #F6F4F0;  /* 画面全体の背景 */
-  --color-surface:       #FFFFFF;  /* カード・ボタン・下から出る画面の面 */
+  --color-surface:       #FFFFFF;  /* カード・ボタン・編集の小窓の面 */
   --color-surface-2:     #EFECE6;  /* 一段沈んだ面（補助ボタン・グラフの地） */
   --color-text:          #1F2328;  /* 文字 */
   --color-text-sub:      #6B7079;  /* 補足の文字 */
   --color-text-faint:    #B3B6BC;  /* 未入力のときの薄い文字 */
   --color-border:        #E7E3DB;  /* 区切り線・入力欄の枠 */
 
-  --color-primary:       #1E7F6B;  /* メインの色（記録ボタン・選択中のタブ・予算の棒） */
+  --color-primary:       #1E7F6B;  /* メインの色（記録ボタン・選択中のメニュー・予算の棒・カードの棒） */
   --color-primary-text:  #FFFFFF;  /* メインの色の上に乗る文字 */
   --color-primary-soft:  #E0F1EC;  /* メインの色の薄い版（選択中の背景） */
 
   --color-danger:        #CF4436;  /* 削除・予算オーバー */
   --color-danger-soft:   #FCE8E5;
   --color-warning:       #E39B12;  /* 予算の残りわずか */
-  --color-warning-soft:  #FDF1D8;  /* 今日以外の日付を選んでいるとき */
+  --color-warning-soft:  #FDF1D8;  /* 今日以外の日付を選んでいるとき・カードの締め前 */
   --color-warning-text:  #8A5A00;
 
-  --color-key-pressed:   #E9E5DE;  /* 数字ボタンを押している間の色 */
-  --color-tabbar:        #FFFFFF;  /* 画面下のタブの帯 */
+  --color-sidebar:       #FFFFFF;  /* 左のメニューの帯 */
   --color-toast-bg:      #24272C;  /* 「記録しました」のお知らせ */
   --color-toast-text:    #FFFFFF;
   --color-toast-action:  #7FD9C3;  /* お知らせの「取り消す」 */
-  --color-overlay:       rgba(24, 26, 30, 0.45);  /* 下から出る画面の後ろの暗幕 */
+  --color-overlay:       rgba(24, 26, 30, 0.45);  /* 編集の小窓の後ろの暗幕 */
   --color-focus:         rgba(30, 127, 107, 0.45); /* キーボード操作時の枠 */
-  --color-statusbar:     #F6F4F0;  /* スマホ上部（時計などの帯）の色 */
+  --color-statusbar:     #F6F4F0;  /* アプリとして入れたときの上の帯の色 */
 
   /* ---- カテゴリの色（12色。設定画面でカテゴリごとに選べます）---- */
   --cat-1:  #F08A3E;
@@ -52,7 +51,7 @@
   --cat-12: #7DB547;
 
   /* ---- 文字 ---- */
-  --font-base:   "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --font-base:   "Meiryo", "メイリオ", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
   --font-number: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI", Roboto, "Hiragino Sans", sans-serif;
 
   --font-size-xs:     12px;
@@ -60,8 +59,7 @@
   --font-size-m:      15px;
   --font-size-l:      18px;
   --font-size-xl:     24px;
-  --font-size-key:    24px;  /* 数字ボタン */
-  --font-size-amount: 44px;  /* 入力中の金額 */
+  --font-size-amount: 38px;  /* 入力画面の金額 */
   --font-size-total:  36px;  /* 集計の合計金額 */
   --font-weight-bold: 700;
 
@@ -71,12 +69,11 @@
   --radius-l:     22px;
   --radius-round: 999px;
   --shadow-card:  0 1px 2px rgba(31, 35, 40, 0.05), 0 2px 10px rgba(31, 35, 40, 0.04);
-  --shadow-key:   0 1px 0 rgba(31, 35, 40, 0.08);
-  --shadow-sheet: 0 -6px 30px rgba(31, 35, 40, 0.18);
+  --shadow-sheet: 0 12px 40px rgba(31, 35, 40, 0.22);  /* 小窓・お知らせの影 */
 }
 
 /* ---- 画像（images フォルダ）---- */
-.img-logo  { background-image: url("images/logo.svg"); }   /* 左上と設定画面のロゴ */
+.img-logo  { background-image: url("images/logo.svg"); }   /* 左上のメニューと設定画面のロゴ */
 .img-empty { background-image: url("images/empty.svg"); }  /* 記録がない月のイラスト */
 
 /* ---- 線のアイコン（images フォルダ。色は文字の色で自動的に塗られます）---- */
@@ -95,3 +92,4 @@
 .icon-download      { -webkit-mask-image: url("images/icon-download.svg");      mask-image: url("images/icon-download.svg"); }
 .icon-upload        { -webkit-mask-image: url("images/icon-upload.svg");        mask-image: url("images/icon-upload.svg"); }
 .icon-table         { -webkit-mask-image: url("images/icon-table.svg");         mask-image: url("images/icon-table.svg"); }
+.icon-card          { -webkit-mask-image: url("images/icon-card.svg");          mask-image: url("images/icon-card.svg"); }
