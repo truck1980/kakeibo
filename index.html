@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>かんたん家計簿</title>
-  <meta name="description" content="使ったお金をすぐ記録できる、ログイン不要の家計簿">
+  <meta name="description" content="月初・支出・月間集計のタブで使える、ログイン不要の家計簿">
   <!-- 明るい画面・暗い画面の両方に対応していることをブラウザに伝える -->
   <meta name="color-scheme" content="light dark">
   <!-- アプリとして入れたときの上の帯の色（起動後は design/theme.css の --color-statusbar に自動で合わせます） -->
-  <meta name="theme-color" content="#F3F4F8">
+  <meta name="theme-color" content="#EEF1F5">
   <link rel="manifest" href="design/manifest.json">
   <link rel="icon" href="design/images/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="app.css">
@@ -23,226 +23,154 @@
 </head>
 <body>
   <div class="app">
-    <!-- ===== 左のメニュー ===== -->
-    <aside class="sidebar">
+    <!-- ===== 上の帯：名前・タブ・表示する月 ===== -->
+    <header class="topbar">
       <div class="brand">
         <span class="img img-logo brand-logo" aria-hidden="true"></span>
         <span class="brand-name">かんたん家計簿</span>
       </div>
-      <nav class="nav" role="tablist" aria-label="画面の切りかえ">
-        <button type="button" class="nav-item" role="tab" data-tab="input" aria-selected="true"><span class="icon icon-pen" aria-hidden="true"></span>入力</button>
-        <button type="button" class="nav-item" role="tab" data-tab="summary" aria-selected="false"><span class="icon icon-chart" aria-hidden="true"></span>集計</button>
-        <button type="button" class="nav-item" role="tab" data-tab="cards" aria-selected="false"><span class="icon icon-card" aria-hidden="true"></span>カードの引き落とし</button>
-        <button type="button" class="nav-item" role="tab" data-tab="settings" aria-selected="false"><span class="icon icon-settings" aria-hidden="true"></span>設定</button>
+      <nav class="tabs" role="tablist" aria-label="画面の切りかえ">
+        <button type="button" class="tab" role="tab" data-tab="start" aria-selected="false">月初</button>
+        <button type="button" class="tab" role="tab" data-tab="spend" aria-selected="true">支出</button>
+        <button type="button" class="tab" role="tab" data-tab="summary" aria-selected="false">月間集計</button>
+        <button type="button" class="tab" role="tab" data-tab="cards" aria-selected="false">カード</button>
+        <button type="button" class="tab" role="tab" data-tab="settings" aria-selected="false">設定</button>
       </nav>
-      <button type="button" class="side-total" id="head-total" aria-label="今月の集計を見る">
-        <span class="side-total-label" id="head-label">今月の支出</span>
-        <span class="side-total-value num" id="head-value">0円</span>
-        <span class="meter" id="head-meter" hidden><span class="meter-fill" id="head-meter-fill"></span></span>
-        <span class="side-total-left num" id="head-left" hidden></span>
-      </button>
-    </aside>
+      <div class="month-nav" id="month-nav">
+        <button type="button" class="icon-btn" id="prev-month" aria-label="前の月"><span class="icon icon-chevron-left" aria-hidden="true"></span></button>
+        <span class="month-nav-title" id="month-title"></span>
+        <button type="button" class="icon-btn" id="next-month" aria-label="次の月"><span class="icon icon-chevron-right" aria-hidden="true"></span></button>
+        <button type="button" class="chip-btn" id="this-month">今月</button>
+      </div>
+    </header>
+
+    <div class="reminder" id="backup-reminder" hidden>
+      <span>しばらくバックアップしていません</span>
+      <button type="button" class="link-btn" id="reminder-btn">設定へ</button>
+    </div>
 
     <main class="main">
-      <!-- ===== 入力 ===== -->
-      <section class="view is-active" data-view="input" aria-label="入力">
-        <header class="page-head">
-          <div>
-            <h1 class="page-title">入力</h1>
-            <p class="page-sub" id="today-text"></p>
-          </div>
-        </header>
+      <!-- ===== 月初：月の始めに入れるもの ===== -->
+      <section class="view" data-view="start" aria-label="月初">
+        <div class="toolbar">
+          <p class="toolbar-text">月の始めに、収入・固定費・予算を入れておきます。カードの支払い金額は、支出の記録から自動で出ます。</p>
+          <button type="button" class="btn btn-ghost btn-inline" id="copy-prev-btn"></button>
+        </div>
+        <div id="start-body"></div>
+      </section>
 
-        <div class="kpis" id="home-kpis"></div>
-
-        <div class="home-grid">
-          <form class="card entry-form" id="entry-form" autocomplete="off" novalidate>
-            <h2 class="card-title">支出を記録する</h2>
-            <div class="field">
+      <!-- ===== 支出 ===== -->
+      <section class="view is-active" data-view="spend" aria-label="支出">
+        <form class="panel entry-bar" id="entry-form" autocomplete="off" novalidate>
+          <div class="entry-fields">
+            <div class="entry-field">
+              <label class="field-label" for="date-input">日付</label>
+              <div class="date-box" id="date-chip">
+                <input class="field-input" type="date" id="date-input">
+                <button type="button" class="chip-btn" id="today-btn">今日</button>
+              </div>
+            </div>
+            <div class="entry-field">
+              <label class="field-label" for="cat-select">カテゴリ</label>
+              <select class="field-input" id="cat-select"></select>
+            </div>
+            <div class="entry-field">
+              <label class="field-label" for="pay-select">支払い方法</label>
+              <select class="field-input" id="pay-select"></select>
+            </div>
+            <div class="entry-field entry-amount">
               <label class="field-label" for="amount-input">金額</label>
-              <div class="field-amount field-amount-l" id="amount-card">
+              <div class="field-amount" id="amount-card">
                 <input class="field-input" type="text" inputmode="numeric" id="amount-input" placeholder="0">
               </div>
             </div>
-
-            <div class="field">
-              <span class="field-label">カテゴリ</span>
-              <div class="cat-grid" id="cat-grid" role="group" aria-label="カテゴリ"></div>
+            <div class="entry-field entry-memo">
+              <label class="field-label" for="memo-input">メモ</label>
+              <input class="field-input" type="text" id="memo-input" maxlength="40" placeholder="なくてもOK">
             </div>
-
-            <div class="field">
-              <span class="field-label">支払い方法</span>
-              <div class="pay-grid" id="pay-grid" role="group" aria-label="支払い方法"></div>
-            </div>
-
-            <div class="field-row">
-              <div class="field">
-                <label class="field-label" for="date-input">日付</label>
-                <div class="date-box" id="date-chip">
-                  <input class="field-input" type="date" id="date-input">
-                  <span class="date-note" id="date-text">今日</span>
-                </div>
-                <div class="quick-dates">
-                  <button type="button" class="chip-btn" data-day="0">今日</button>
-                  <button type="button" class="chip-btn" data-day="-1">昨日</button>
-                  <button type="button" class="chip-btn" data-day="-2">おととい</button>
-                </div>
-              </div>
-              <div class="field">
-                <label class="field-label" for="memo-input">メモ</label>
-                <input class="field-input" type="text" id="memo-input" maxlength="40" placeholder="なくてもOK">
-              </div>
-            </div>
-
-            <button type="submit" class="btn btn-primary btn-save" id="save-btn">記録する<span class="kbd">Enter</span></button>
-            <p class="hint" id="first-hint">金額を入れて → カテゴリを選んで → Enterキー（または「記録する」）</p>
-          </form>
-
-          <div class="home-main stack">
-            <section class="card">
-              <h2 class="card-title"><span>今月の日別の支出</span><span class="card-sub" id="home-daily-sub"></span></h2>
-              <div id="home-daily"></div>
-            </section>
-            <section class="card">
-              <h2 class="card-title"><span>最近入力した記録</span><span class="card-sub">行を押すと直せます</span></h2>
-              <div id="recent-list"></div>
-            </section>
+            <button type="submit" class="btn btn-primary btn-inline entry-submit" id="save-btn">追加<span class="kbd">Enter</span></button>
           </div>
+          <p class="hint" id="first-hint">金額を入れて、カテゴリを選んで、Enterキー（または「追加」）で記録します。</p>
+        </form>
 
-          <div class="home-side stack">
-            <section class="card">
-              <h2 class="card-title"><span>今月のカテゴリ別</span><button type="button" class="link-btn" id="home-to-summary">集計を見る ›</button></h2>
-              <div id="home-cats"></div>
-            </section>
-            <section class="card">
-              <h2 class="card-title"><span>カードの次の引き落とし</span><button type="button" class="link-btn" id="home-to-cards">くわしく ›</button></h2>
-              <div id="home-bills"></div>
-            </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title" id="spend-title"></h2>
+            <div class="panel-actions" id="spend-filters"></div>
           </div>
-        </div>
-      </section>
-
-      <!-- ===== 集計 ===== -->
-      <section class="view" data-view="summary" aria-label="集計">
-        <header class="page-head">
-          <h1 class="page-title">集計</h1>
-          <div class="month-nav">
-            <button type="button" class="icon-btn" id="prev-month" aria-label="前の月"><span class="icon icon-chevron-left" aria-hidden="true"></span></button>
-            <span class="month-nav-title" id="month-title"></span>
-            <button type="button" class="icon-btn" id="next-month" aria-label="次の月"><span class="icon icon-chevron-right" aria-hidden="true"></span></button>
-            <button type="button" class="chip-btn" id="this-month">今月</button>
-          </div>
-        </header>
-
-        <div class="reminder" id="backup-reminder" hidden>
-          <span>しばらくバックアップしていません</span>
-          <button type="button" class="link-btn" id="reminder-btn">設定へ</button>
-        </div>
-
-        <div class="kpis" id="sum-kpis"></div>
-
-        <div class="split">
-          <section class="card">
-            <h2 class="card-title"><span>日別の支出</span><span class="card-sub" id="sum-daily-sub"></span></h2>
-            <div class="fill" id="sum-daily"></div>
-          </section>
-          <section class="card">
-            <h2 class="card-title">カテゴリ別</h2>
-            <div class="breakdown-body" id="breakdown-body">
-              <div class="donut-wrap" id="donut-wrap"></div>
-              <ul class="legend" id="legend"></ul>
-            </div>
-          </section>
-        </div>
-
-        <div class="split">
-          <section class="card">
-            <h2 class="card-title"><span>月ごとの推移</span><span class="card-sub">12か月・支払い方法別（棒を押すとその月へ）</span></h2>
-            <div class="fill" id="sum-trend"></div>
-          </section>
-          <section class="card" id="pay-card">
-            <h2 class="card-title"><span>支払い方法別</span><span class="card-sub">使った日の月で集計</span></h2>
-            <ul class="pay-list" id="pay-list"></ul>
-            <button type="button" class="link-btn" id="pay-hint" hidden>クレジットカードを登録すると、カード別に集計できます ›</button>
-          </section>
-        </div>
-
-        <section class="card">
-          <h2 class="card-title"><span>記録</span><span class="filter-slot" id="filter-slot"></span></h2>
-          <div id="record-list"></div>
+          <div class="panel-body" id="spend-list"></div>
         </section>
       </section>
 
-      <!-- ===== カードの引き落とし ===== -->
-      <section class="view" data-view="cards" aria-label="カードの引き落とし">
-        <header class="page-head">
-          <h1 class="page-title">カードの引き落とし</h1>
-        </header>
-        <div class="stack" id="cards-body"></div>
+      <!-- ===== 月間集計 ===== -->
+      <section class="view" data-view="summary" aria-label="月間集計">
+        <div id="summary-body"></div>
+      </section>
+
+      <!-- ===== カード ===== -->
+      <section class="view" data-view="cards" aria-label="カード">
+        <div id="cards-body"></div>
       </section>
 
       <!-- ===== 設定 ===== -->
       <section class="view" data-view="settings" aria-label="設定">
-        <header class="page-head">
-          <h1 class="page-title">設定</h1>
-        </header>
-
         <div class="cols-3">
           <div class="col">
-            <section class="card">
-              <h2 class="card-title">画面の明るさ</h2>
-              <div class="seg" id="theme-seg" role="group" aria-label="画面の明るさ">
-                <button type="button" class="pay-btn" data-theme-choice="auto">自動</button>
-                <button type="button" class="pay-btn" data-theme-choice="light">明るい画面</button>
-                <button type="button" class="pay-btn" data-theme-choice="dark">暗い画面</button>
-              </div>
-              <p class="note note-tight">「自動」は Windows の設定（ライト／ダーク）に合わせます。</p>
-            </section>
-
-            <section class="card">
-              <h2 class="card-title">月の予算</h2>
-              <button type="button" class="list-row" id="budget-row">
-                <span class="list-row-label">1か月の予算</span>
-                <span class="list-row-value num" id="budget-value">未設定</span>
-                <span class="icon icon-chevron-right icon-s" aria-hidden="true"></span>
-              </button>
-            </section>
-
-            <section class="card">
-              <h2 class="card-title">バックアップ</h2>
-              <p class="note">データはこのパソコンのブラウザの中だけに保存されています。ブラウザの閲覧データの消去やパソコンの故障に備えて、ときどきバックアップを保存してください。</p>
-              <p class="note note-strong" id="last-backup"></p>
-              <button type="button" class="btn btn-primary" id="export-btn"><span class="icon icon-download icon-s" aria-hidden="true"></span>バックアップを保存する</button>
-              <button type="button" class="btn btn-ghost" id="import-btn"><span class="icon icon-upload icon-s" aria-hidden="true"></span>バックアップから戻す</button>
-              <button type="button" class="btn btn-ghost" id="csv-btn"><span class="icon icon-table icon-s" aria-hidden="true"></span>Excel用に書き出す（CSV）</button>
-            </section>
-          </div>
-
-          <div class="col">
-            <section class="card">
-              <h2 class="card-title">カテゴリ</h2>
-              <ul class="cat-list" id="cat-list"></ul>
-              <button type="button" class="btn btn-ghost" id="add-cat-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>カテゴリを追加</button>
-            </section>
-          </div>
-
-          <div class="col">
-            <section class="card">
-              <h2 class="card-title">支払い方法（クレジットカードなど）</h2>
-              <p class="note">クレジットカードは「締め日」と「支払日」を登録すると、引き落とされる月ごとの金額がわかります。</p>
-              <ul class="cat-list" id="pay-setting-list"></ul>
-              <button type="button" class="btn btn-ghost" id="add-pay-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>カード・支払い方法を追加</button>
-            </section>
-
-            <section class="card">
-              <div class="about-head">
-                <span class="img img-logo about-logo" aria-hidden="true"></span>
-                <div>
-                  <div class="about-name">かんたん家計簿</div>
-                  <div class="about-ver">バージョン <span id="app-version"></span></div>
+            <section class="panel">
+              <div class="panel-head"><h2 class="panel-title">画面の明るさ</h2></div>
+              <div class="panel-body panel-pad">
+                <div class="seg" id="theme-seg" role="group" aria-label="画面の明るさ">
+                  <button type="button" class="pay-btn" data-theme-choice="auto">自動</button>
+                  <button type="button" class="pay-btn" data-theme-choice="light">明るい画面</button>
+                  <button type="button" class="pay-btn" data-theme-choice="dark">暗い画面</button>
                 </div>
+                <p class="note note-tight">「自動」は Windows の設定（ライト／ダーク）に合わせます。</p>
               </div>
-              <p class="note note-tight">ログインは不要です。入力したデータはインターネットに送られず、このパソコンのブラウザの中だけに保存されます。</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2 class="panel-title">バックアップ</h2></div>
+              <div class="panel-body panel-pad">
+                <p class="note">データはこのパソコンのブラウザの中だけに保存されています。ブラウザの閲覧データの消去やパソコンの故障に備えて、ときどきバックアップを保存してください。</p>
+                <p class="note note-strong" id="last-backup"></p>
+                <button type="button" class="btn btn-primary" id="export-btn"><span class="icon icon-download icon-s" aria-hidden="true"></span>バックアップを保存する</button>
+                <button type="button" class="btn btn-ghost" id="import-btn"><span class="icon icon-upload icon-s" aria-hidden="true"></span>バックアップから戻す</button>
+                <button type="button" class="btn btn-ghost" id="csv-btn"><span class="icon icon-table icon-s" aria-hidden="true"></span>Excel用に書き出す（CSV）</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="col">
+            <section class="panel">
+              <div class="panel-head"><h2 class="panel-title">カテゴリ</h2></div>
+              <div class="panel-body panel-pad">
+                <ul class="cat-list" id="cat-list"></ul>
+                <button type="button" class="btn btn-ghost" id="add-cat-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>カテゴリを追加</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="col">
+            <section class="panel">
+              <div class="panel-head"><h2 class="panel-title">支払い方法（クレジットカードなど）</h2></div>
+              <div class="panel-body panel-pad">
+                <p class="note">クレジットカードは「締め日」と「支払日」を登録すると、引き落とされる月ごとの金額がわかります。</p>
+                <ul class="cat-list" id="pay-setting-list"></ul>
+                <button type="button" class="btn btn-ghost" id="add-pay-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>カード・支払い方法を追加</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-body panel-pad">
+                <div class="about-head">
+                  <span class="img img-logo about-logo" aria-hidden="true"></span>
+                  <div>
+                    <div class="about-name">かんたん家計簿</div>
+                    <div class="about-ver">バージョン <span id="app-version"></span></div>
+                  </div>
+                </div>
+                <p class="note note-tight">ログインは不要です。入力したデータはインターネットに送られず、このパソコンのブラウザの中だけに保存されます。</p>
+              </div>
             </section>
           </div>
         </div>
