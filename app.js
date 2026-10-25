@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '5.0.0';
+  const APP_VERSION = '5.1.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
@@ -13,6 +13,7 @@
   const CASH_ID = 'cash';      // 削除できない支払い方法（現金）
   const CASH_COLOR = 10;       // 現金の色（灰色）
   const END_OF_MONTH = 31;     // 締め日・支払日の「末日」
+  const DEFAULT_CLOSING_DAY = 24;  // 家計簿の月の締め日（25日〜翌24日が1か月分）
   const BACKUP_REMIND_DAYS = 30;
   const TREND_MONTHS = 12;     // 月間集計の「月ごとの表」に出す月の数
   const THEMES = ['auto', 'light', 'dark'];  // 画面の明るさ（自動＝Windowsの設定に合わせる）
@@ -54,7 +55,8 @@
   const pad2 = (n) => String(n).padStart(2, '0');
   const yen = (n) => Math.round(n).toLocaleString('ja-JP');
   const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const monthOf = (dateStr) => dateStr.slice(0, 7);
+  // 暦どおりの月（カードの締め・引き落としの計算に使う）
+  const calMonthOf = (dateStr) => dateStr.slice(0, 7);
   const dayNum = (dateStr) => Number(dateStr.slice(8));
   const sumAmount = (recs) => recs.reduce((sum, r) => sum + r.amount, 0);
 
@@ -89,6 +91,24 @@
     return `${y}年${m}月`;
   }
   const monthName = (key) => `${Number(key.slice(5))}月`;
+  // 家計簿の月：締め日までがその月（締め日24日なら、9月25日〜10月24日は「10月」）。末日締めなら暦どおり
+  function monthOf(dateStr) {
+    const closing = data.settings.closingDay;
+    const key = calMonthOf(dateStr);
+    return closing === END_OF_MONTH || dayNum(dateStr) <= closing ? key : shiftMonth(key, 1);
+  }
+  // 家計簿の月の、はじめの日と終わりの日
+  function periodOf(key) {
+    const closing = data.settings.closingDay;
+    if (closing === END_OF_MONTH) return { start: `${key}-01`, end: `${key}-${pad2(daysInMonth(key))}` };
+    const prev = shiftMonth(key, -1);
+    return { start: addDays(`${prev}-${pad2(closing)}`, 1), end: `${key}-${pad2(closing)}` };
+  }
+  const md = (s) => `${Number(s.slice(5, 7))}/${Number(s.slice(8))}`;
+  function periodText(key) {
+    const { start, end } = periodOf(key);
+    return `${md(start)}〜${md(end)}`;
+  }
   function daysBetween(a, b) {
     return Math.round((parseDate(b) - parseDate(a)) / 86400000);
   }
@@ -154,7 +174,7 @@
       specials: [],     // 月初の特別支出 { id, month, name, day, source, amount }
       savings: [],      // 月初の貯蓄まとめ { id, month, name, amount }
       memos: {},        // 月ごとのメモ { 'YYYY-MM': 文字 }
-      settings: { lastBackup: null, theme: 'auto' },
+      settings: { lastBackup: null, theme: 'auto', closingDay: DEFAULT_CLOSING_DAY },
     };
   }
 
@@ -233,7 +253,7 @@
       if (!r || !(amount > 0) || !isDate(r.date)) continue;
       if (r.fixed) {
         // 3.0.0 で「固定費の印つきの記録」として入れたものは、月初の固定費に移す
-        fixeds.push({ id: String(r.id || newId()), month: monthOf(r.date), name: (typeof r.memo === 'string' && r.memo.trim()) || '固定費', amount: Math.min(amount, maxAmount), accountId: '', day: dayNum(r.date) });
+        fixeds.push({ id: String(r.id || newId()), month: calMonthOf(r.date), name: (typeof r.memo === 'string' && r.memo.trim()) || '固定費', amount: Math.min(amount, maxAmount), accountId: '', day: dayNum(r.date) });
         continue;
       }
       const catId = mapCat(r.categoryId);
@@ -318,6 +338,7 @@
       settings: {
         lastBackup: isDate(st.lastBackup) ? st.lastBackup : null,
         theme: THEMES.includes(st.theme) ? st.theme : 'auto',
+        closingDay: clampDay(st.closingDay, DEFAULT_CLOSING_DAY),
       },
     };
   }
@@ -363,7 +384,7 @@
     date: todayStr(),    // 入力中の日付
     today: todayStr(),
     viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計で見ている月
-    billMonth: monthOf(todayStr()),  // カードの引き落とし画面で見ている月
+    billMonth: calMonthOf(todayStr()),  // カードの引き落とし画面で見ている月
     sum: { range: 'month', cat: '', pay: '', by: 'cat' },  // 集計の画面の条件
   };
 
@@ -423,7 +444,7 @@
   }
   // 使った日が、どの月の締めに入るか（締め日を過ぎて使った分は翌月の締めに入る）
   function statementOf(p, dateStr) {
-    const key = monthOf(dateStr);
+    const key = calMonthOf(dateStr);
     return dateStr <= dayOf(key, p.closingDay) ? key : shiftMonth(key, 1);
   }
   // 使った日の分が引き落とされる月
@@ -437,12 +458,17 @@
     const start = addDays(dayOf(shiftMonth(stKey, -1), p.closingDay), 1);
     return { start, end, payDate: dayOf(billKey, p.payDay) };
   }
+  // 家計簿の月(key)のなかに引き落とし日が入る、カードの引き落とし月
+  function billKeyIn(p, key) {
+    const prev = shiftMonth(key, -1);
+    return monthOf(billInfo(p, prev).payDate) === key ? prev : key;
+  }
   function billRecords(p, billKey) {
     return data.records.filter((r) => r.paymentId === p.id && billMonthOf(p, r.date) === billKey);
   }
   // 今日より後で、いちばん近い引き落としの月
   function nextBillMonth(p) {
-    const cur = monthOf(ui.today);
+    const cur = calMonthOf(ui.today);
     return ui.today <= dayOf(cur, p.payDay) ? cur : shiftMonth(cur, 1);
   }
   function billStatus(info, total) {
@@ -453,7 +479,7 @@
     return { label: '締め前（まだ増えます）', cls: 'badge-warn' };
   }
   function billRange(list) {
-    const cur = monthOf(ui.today);
+    const cur = calMonthOf(ui.today);
     let min = cur;
     let max = cur;
     const consider = (k) => { if (k < min) min = k; if (k > max) max = k; };
@@ -587,7 +613,7 @@
     const specials = specialOf(key);
     const savings = savingOf(key);
     const cardList = cards();
-    const cardBill = cardList.reduce((sum, p) => sum + sumAmount(billRecords(p, key)), 0);
+    const cardBill = cardList.reduce((sum, p) => sum + sumAmount(billRecords(p, billKeyIn(p, key))), 0);
 
     // ⓐ〜ⓕ（手書きのページの記号と同じ）
     const A = sumAmount(incomes);
@@ -882,7 +908,7 @@
     const key = ui.viewMonth;
     if (!data.payments.some((p) => p.id === ui.paymentId)) ui.paymentId = CASH_ID;
     const recs = data.records.filter((r) => monthOf(r.date) === key).sort(byDate);
-    let lastDate = recs.length ? recs[recs.length - 1].date : (monthOf(ui.today) === key ? ui.today : `${key}-01`);
+    let lastDate = recs.length ? recs[recs.length - 1].date : (monthOf(ui.today) === key ? ui.today : periodOf(key).start);
     let lastPay = recs.length ? recs[recs.length - 1].paymentId : ui.paymentId;
     if (!data.payments.some((p) => p.id === lastPay)) lastPay = CASH_ID;
 
@@ -1025,7 +1051,7 @@
       h('button', {
         type: 'button', class: 'btn btn-primary',
         onclick: () => {
-          const today = monthOf(ui.today) === key ? ui.today : `${key}-01`;
+          const today = monthOf(ui.today) === key ? ui.today : periodOf(key).start;
           openRecordSheet({ id: newId(), amount: 0, categoryId: catId, paymentId: ui.paymentId, date: today, memo: '', createdAt: Date.now() }, true);
         },
       }, '＋ 追加'),
@@ -1164,7 +1190,7 @@
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': '前の月', disabled: key <= range.min, onclick: () => go(shiftMonth(key, -1)) }, icon('chevron-left')),
       h('span', { class: 'month-nav-title' }, `${fmtMonth(key)}の引き落とし`),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': '次の月', disabled: key >= range.max, onclick: () => go(shiftMonth(key, 1)) }, icon('chevron-right')),
-      key !== monthOf(ui.today) && h('button', { type: 'button', class: 'chip-btn', onclick: () => go(monthOf(ui.today)) }, '今月'));
+      key !== calMonthOf(ui.today) && h('button', { type: 'button', class: 'chip-btn', onclick: () => go(calMonthOf(ui.today)) }, '今月'));
     const head = h('div', { class: 'toolbar' },
       h('p', { class: 'toolbar-text' }, `${fmtMonth(key)}の引き落とし合計：`, h('b', { class: 'num' }, money(monthTotal)), `（カード${list.length}枚）`),
       nav);
@@ -1195,6 +1221,7 @@
     const range = monthRange();
     $('#month-nav').hidden = !MONTH_TABS.includes(ui.tab) || (ui.tab === 'summary' && ui.sum.range === 'all');
     $('#month-title').textContent = fmtMonth(key);
+    $('#month-range').textContent = periodText(key);
     $('#prev-month').disabled = key <= range.min;
     $('#next-month').disabled = key >= range.max;
     $('#this-month').hidden = key === monthOf(ui.today);
@@ -1208,6 +1235,10 @@
   /* ---------- 設定画面 ---------- */
   function renderSettings() {
     $$('#theme-seg [data-theme-choice]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeChoice === data.settings.theme)));
+
+    $('#closing-day').value = String(data.settings.closingDay);
+    const cur = monthOf(ui.today);
+    $('#closing-now').textContent = `今は ${fmtMonth(cur)} の途中です（${periodText(cur)}）`;
 
     $('#cat-list').replaceChildren(...data.categories.map((c, i, list) => h('li', { class: 'cat-row' },
       h('button', { type: 'button', class: 'cat-row-main', onclick: () => openCategorySheet(c) },
@@ -1864,11 +1895,11 @@
     const wasToday = ui.date === ui.today;
     const cur = monthOf(ui.today);
     const wasThisMonth = ui.viewMonth === cur;
-    const wasThisBill = ui.billMonth === cur;
+    const wasThisBill = ui.billMonth === calMonthOf(ui.today);
     ui.today = now;
     if (wasToday) ui.date = now;
     if (wasThisMonth) ui.viewMonth = monthOf(now);
-    if (wasThisBill) ui.billMonth = monthOf(now);
+    if (wasThisBill) ui.billMonth = calMonthOf(now);
     renderAll();
   }
 
@@ -1903,6 +1934,16 @@
       applyTheme();
       renderSettings();
     }));
+    const closingSel = $('#closing-day');
+    closingSel.append(...Array.from({ length: 28 }, (_, i) => h('option', { value: String(i + 1) }, `${i + 1}日`)),
+      h('option', { value: String(END_OF_MONTH) }, '末日（暦どおりの月）'));
+    closingSel.addEventListener('change', () => {
+      data.settings.closingDay = clampDay(closingSel.value, DEFAULT_CLOSING_DAY);
+      save();
+      ui.viewMonth = monthOf(ui.today);
+      renderAll();
+      showToast(`締め日を ${data.settings.closingDay === END_OF_MONTH ? '末日' : data.settings.closingDay + '日'} にしました`);
+    });
     $('#add-cat-btn').addEventListener('click', () => openCategorySheet(null));
     $('#add-pay-btn').addEventListener('click', () => openPaymentSheet(null));
     $('#add-account-btn').addEventListener('click', () => openAccountSheet(null));

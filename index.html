@@ -39,6 +39,7 @@
       <div class="month-nav" id="month-nav">
         <button type="button" class="icon-btn" id="prev-month" aria-label="前の月"><span class="icon icon-chevron-left" aria-hidden="true"></span></button>
         <span class="month-nav-title" id="month-title"></span>
+        <span class="panel-note" id="month-range"></span>
         <button type="button" class="icon-btn" id="next-month" aria-label="次の月"><span class="icon icon-chevron-right" aria-hidden="true"></span></button>
         <button type="button" class="chip-btn" id="this-month">今月</button>
       </div>
@@ -87,6 +88,16 @@
                   <button type="button" class="pay-btn" data-theme-choice="dark">暗い画面</button>
                 </div>
                 <p class="note note-tight">「自動」は Windows の設定（ライト／ダーク）に合わせます。</p>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2 class="panel-title">月の締め日</h2></div>
+              <div class="panel-body panel-pad">
+                <select class="field-input" id="closing-day" aria-label="月の締め日"></select>
+                <p class="note note-strong note-tight" id="closing-now"></p>
+                <p class="note">例：締め日が24日なら、9月25日〜10月24日の分が「10月」として集計されます（月初・支出・月間集計の月の区切り）。カードの締め日・引き落とし日は、カードごとの設定のままで変わりません。</p>
+                <p class="note">締め日を変えると、記録した日付はそのままで、どの月に入るかだけが変わります。月初に入れた収入・固定費などは、月の名前のまま残ります。</p>
               </div>
             </section>
 
