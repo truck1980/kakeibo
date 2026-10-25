@@ -143,6 +143,9 @@ ul { list-style: none; }
 .cols-3 { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); align-items: start; }
 .col { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 @media (min-width: 1100px) { .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.grid-3 { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); align-items: start; }
+@media (min-width: 1000px) { .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1500px) { .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (min-width: 1000px) { .cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1500px) { .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 
@@ -278,6 +281,32 @@ select.field-input { padding-right: 0.5rem; cursor: pointer; }
 .bill-meta b { color: var(--color-text); }
 .panel-head .num { font-size: var(--font-size-l); }
 
+/* ---------- 手書きの家計簿のような、マス目の表（週の支出・予算・決算） ---------- */
+.table-grid th, .table-grid td { border-right: 1px solid var(--color-border); padding: 0.375rem 0.625rem; }
+.table-grid th:last-child, .table-grid td:last-child { border-right: 0; }
+.table-grid tbody th.t-item {
+  background: var(--color-surface-2); color: var(--color-text);
+  font-size: var(--font-size-m); font-weight: normal; white-space: nowrap;
+  border-bottom: 1px solid var(--color-border);
+}
+.table-grid tbody tr:last-child th.t-item { border-bottom: 0; }
+.table-grid .t-cell { min-width: 5.25rem; cursor: pointer; }
+.table-grid .t-cell:hover, .table-grid .t-cell:focus-visible { background: var(--color-primary-soft); }
+.table-grid .t-sum { font-weight: var(--font-weight-bold); }
+.table-grid .t-judge { text-align: center; width: 4.5rem; font-weight: var(--font-weight-bold); }
+.table-grid .t-input { padding: 0.125rem 0.375rem; width: 9rem; }
+.table-grid th.is-sun { color: var(--color-danger); }
+.table-grid th.is-sat { color: var(--color-accent-text); }
+.table-grid .neg { color: var(--color-danger); }
+.budget-input { height: 2rem; text-align: right; font-family: var(--font-number); padding: 0 0.5rem; }
+.budget-total { padding: 0.5rem 1rem; border-bottom: 1px solid var(--color-border); font-size: var(--font-size-m); }
+.budget-total b { margin-left: 0.5rem; font-size: var(--font-size-l); }
+.note-pad { padding: 0.625rem 1rem 0.75rem; margin: 0; border-top: 1px solid var(--color-border); }
+.link-row { padding: 0 0.25rem; }
+.grid-budget { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); align-items: start; }
+@media (min-width: 1500px) { .grid-budget { grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); } }
+#week-tabs .pay-btn { height: 2rem; padding: 0 1rem; }
+
 /* ---------- 設定画面 ---------- */
 .pay-grid, .seg { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .pay-btn {
@@ -411,3 +440,41 @@ select.field-input { padding-right: 0.5rem; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---- 月初（手書きの家計簿のページと同じ並び） ---- */
+.mark { color: var(--color-accent-text); font-weight: var(--font-weight-bold); }
+.tag { margin-left: 0.5rem; padding: 0.0625rem 0.5rem; font-size: var(--font-size-xs); color: var(--color-text-sub); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-round); }
+.table tbody tr.row-blank td { height: 2.25rem; }
+.table tbody tr.row-auto td { background: var(--color-surface-2); color: var(--color-text-sub); font-weight: var(--font-weight-bold); }
+.card-memo-list { display: flex; flex-direction: column; gap: 1rem; padding-bottom: 0.5rem; }
+.card-memo-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.625rem 1rem 0.375rem; }
+.card-memo-rule { font-size: var(--font-size-s); color: var(--color-text-sub); }
+.card-memo .note-tight { margin: 0.25rem 1rem 0; }
+.formula { padding: 0.75rem 1rem 1rem; text-align: center; }
+.formula-text { font-size: var(--font-size-s); color: var(--color-text-sub); }
+.formula-num { font-family: var(--font-number); font-size: var(--font-size-xl); font-weight: var(--font-weight-bold); }
+.formula-num.pos { color: var(--color-success); }
+.formula-num.neg { color: var(--color-danger); }
+.memo-area { width: 100%; min-height: 8rem; resize: vertical; line-height: 1.7; }
+
+.table-grid tbody th.t-link { cursor: pointer; }
+.table-grid tbody th.t-link:hover, .table-grid tbody th.t-link:focus-visible { background: var(--color-primary-soft); }
+
+/* ---- 支出（Excel の表のような入力表） ---- */
+.spend-grid th.c-date { width: 11.5rem; } .spend-grid th.c-cat { width: 13rem; } .spend-grid th.c-amount { width: 10rem; } .spend-grid th.c-pay { width: 12rem; } .spend-grid th.c-del { width: 3rem; }
+.spend-grid td { padding: 0; border-right: 1px solid var(--color-border); }
+.spend-grid td:last-child { border-right: 0; }
+.spend-grid tfoot td { padding: 0.5rem 1rem; }
+.cell-input { width: 100%; height: 2.5rem; border: 0; border-radius: 0; background: transparent; padding: 0 0.625rem; font: inherit; color: inherit; }
+.cell-input.num { text-align: right; font-family: var(--font-number); }
+.cell-input:focus { outline: 2px solid var(--color-primary); outline-offset: -2px; background: var(--color-surface); }
+.spend-grid tr.is-new .cell-input { background: var(--color-surface-2); }
+.spend-grid tr.is-new .cell-input:focus { background: var(--color-surface); }
+.spend-grid tr.is-invalid td { background: var(--color-danger-soft); }
+.spend-grid .t-del { text-align: center; }
+.row-del { opacity: 0.55; } .row-del:hover { opacity: 1; }
+/* ---- 集計 ---- */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1rem; padding: 0.875rem 1rem; }
+.filter-bar .field { margin: 0; }
+.filter-bar select.field-input { min-width: 12rem; }
+.spend-grid { min-width: 56rem; } .spend-grid th.c-memo { min-width: 14rem; }

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '3.0.0';
+  const APP_VERSION = '5.0.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
@@ -17,18 +17,18 @@
   const TREND_MONTHS = 12;     // 月間集計の「月ごとの表」に出す月の数
   const THEMES = ['auto', 'light', 'dark'];  // 画面の明るさ（自動＝Windowsの設定に合わせる）
 
+  // 手書きの家計簿（週の支出・予算の表）の項目。「その他」は削除できない項目
   const DEFAULT_CATEGORIES = [
-    { id: 'food',      name: '食費',   icon: '🍚', color: 1 },
-    { id: 'daily',     name: '日用品', icon: '🧻', color: 2 },
-    { id: 'transport', name: '交通費', icon: '🚃', color: 3 },
-    { id: 'eatout',    name: '外食',   icon: '🍜', color: 4 },
-    { id: 'hobby',     name: '趣味',   icon: '🎮', color: 5 },
-    { id: 'clothes',   name: '衣服',   icon: '👕', color: 6 },
-    { id: 'medical',   name: '医療',   icon: '💊', color: 7 },
-    { id: 'utility',   name: '光熱費', icon: '💡', color: 8 },
-    { id: 'phone',     name: '通信費', icon: '📱', color: 9 },
-    { id: OTHER_ID,    name: 'その他', icon: '📦', color: 10 },
-  ];
+    ['food', '食費', '🍚'], ['sake', '酒', '🍺'], ['eatout', '外食', '🍜'], ['daily', '日用品', '🧻'],
+    ['bu', 'ブー', '🐶'], ['beauty', '美容', '💄'], ['clothes', '衣服', '👕'], ['goods', '雑貨', '🧴'],
+    ['gas', 'ガソリン', '⛽'], ['car', '車', '🚗'], ['medical', '医療', '💊'], ['hobby', '趣味', '🎮'],
+    ['fun', '娯楽', '🎬'], ['social', '交際', '🎁'], ['stationery', '文房具', '📚'], ['furniture', '家具', '🏠'],
+    ['appliance', '家電', '💻'], ['kerosene', '灯油', '🔥'], [OTHER_ID, 'その他', '📦'],
+  ].map(([id, name, icon], i) => ({ id, name, icon, color: (i % COLOR_COUNT) + 1 }));
+
+  // 前の版（2.x・3.0.0）の初期の項目のままのデータは、手書きの項目に入れかえる（記録は近い項目に移す）
+  const OLD_DEFAULT_NAMES = { food: '食費', daily: '日用品', transport: '交通費', eatout: '外食', hobby: '趣味', clothes: '衣服', medical: '医療', utility: '光熱費', phone: '通信費', other: 'その他' };
+  const OLD_CATEGORY_MAP = { food: 'food', daily: 'daily', transport: 'car', eatout: 'eatout', hobby: 'hobby', clothes: 'clothes', medical: 'medical', utility: OTHER_ID, phone: OTHER_ID, other: OTHER_ID };
 
   // 支払い方法の種類：cash＝現金、card＝クレジットカード（締め日・支払日あり）、other＝電子マネーなど
   const DEFAULT_PAYMENTS = [
@@ -142,12 +142,19 @@
   /* ---------- データの読み書き（ブラウザの中に保存） ---------- */
   function defaultData() {
     return {
-      version: 2,
+      version: 3,
       categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
       payments: DEFAULT_PAYMENTS.map((p) => ({ ...p })),
-      records: [],
-      incomes: [],
-      settings: { budget: 0, lastBackup: null, theme: 'auto' },
+      accounts: [],     // 口座引落の口座 { id, name }
+      records: [],      // 支出の記録
+      incomes: [],      // 月初の収入 { id, month, name, amount }
+      fixeds: [],       // 月初の固定費 { id, month, name, amount, accountId（空＝現金支出）, day（0＝指定なし） }
+      budgets: {},      // 項目ごとの月の予算 { 'YYYY-MM': { 項目id: 金額 } }
+      varis: [],        // 月初の「毎月の金額がかわるもの」 { id, month, name, day, budget, actual }
+      specials: [],     // 月初の特別支出 { id, month, name, day, source, amount }
+      savings: [],      // 月初の貯蓄まとめ { id, month, name, amount }
+      memos: {},        // 月ごとのメモ { 'YYYY-MM': 文字 }
+      settings: { lastBackup: null, theme: 'auto' },
     };
   }
 
@@ -167,9 +174,18 @@
     if (!obj || typeof obj !== 'object' || !Array.isArray(obj.categories) || !Array.isArray(obj.records)) {
       throw new Error('家計簿のデータではありません');
     }
+    const maxAmount = 10 ** MAX_DIGITS - 1;
+    const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    const isMonth = (v) => typeof v === 'string' && /^\d{4}-\d{2}$/.test(v);
+    const isOldDefault = (Number(obj.version) || 0) < 3
+      && obj.categories.length === Object.keys(OLD_DEFAULT_NAMES).length
+      && obj.categories.every((c) => c && OLD_DEFAULT_NAMES[c.id] === c.name);
+    const catsIn = isOldDefault ? DEFAULT_CATEGORIES : obj.categories;
+    const mapCat = (id) => (isOldDefault ? OLD_CATEGORY_MAP[id] || OTHER_ID : id);
+
     const seen = new Set();
     const categories = [];
-    for (const c of obj.categories) {
+    for (const c of catsIn) {
       if (!c || typeof c.id !== 'string' || typeof c.name !== 'string' || seen.has(c.id)) continue;
       seen.add(c.id);
       categories.push({
@@ -202,43 +218,105 @@
       payments.unshift({ ...DEFAULT_PAYMENTS[0] });
       payIds.add(CASH_ID);
     }
+    const accIds = new Set();
+    const accounts = [];
+    for (const a of Array.isArray(obj.accounts) ? obj.accounts : []) {
+      if (!a || typeof a.id !== 'string' || typeof a.name !== 'string' || accIds.has(a.id)) continue;
+      accIds.add(a.id);
+      accounts.push({ id: a.id, name: a.name.trim().slice(0, 12) || '（名前なし）' });
+    }
+
+    const fixeds = [];
     const records = [];
     for (const r of obj.records) {
       const amount = Math.round(Number(r && r.amount));
-      if (!r || !(amount > 0) || typeof r.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) continue;
+      if (!r || !(amount > 0) || !isDate(r.date)) continue;
+      if (r.fixed) {
+        // 3.0.0 で「固定費の印つきの記録」として入れたものは、月初の固定費に移す
+        fixeds.push({ id: String(r.id || newId()), month: monthOf(r.date), name: (typeof r.memo === 'string' && r.memo.trim()) || '固定費', amount: Math.min(amount, maxAmount), accountId: '', day: dayNum(r.date) });
+        continue;
+      }
+      const catId = mapCat(r.categoryId);
       records.push({
         id: String(r.id || newId()),
-        amount: Math.min(amount, 10 ** MAX_DIGITS - 1),
-        categoryId: seen.has(r.categoryId) ? r.categoryId : OTHER_ID,
+        amount: Math.min(amount, maxAmount),
+        categoryId: seen.has(catId) ? catId : OTHER_ID,
         paymentId: payIds.has(r.paymentId) ? r.paymentId : CASH_ID,
         date: r.date,
         memo: typeof r.memo === 'string' ? r.memo.slice(0, 40) : '',
         createdAt: Number(r.createdAt) || 0,
-        ...(r.fixed ? { fixed: true } : {}),   // 月初で入れた「毎月の固定費」の印
       });
     }
-    // 収入（月ごと）。バックアップに入っていない古いデータは空で読みこむ
+    for (const f of Array.isArray(obj.fixeds) ? obj.fixeds : []) {
+      const amount = Math.round(Number(f && f.amount));
+      if (!f || !(amount > 0) || !isMonth(f.month)) continue;
+      fixeds.push({
+        id: String(f.id || newId()), month: f.month,
+        name: typeof f.name === 'string' && f.name.trim() ? f.name.trim().slice(0, 20) : '固定費',
+        amount: Math.min(amount, maxAmount),
+        accountId: accIds.has(f.accountId) ? f.accountId : '',
+        day: clampDay(f.day, 0),
+      });
+    }
     const incomes = [];
     for (const i of Array.isArray(obj.incomes) ? obj.incomes : []) {
       const amount = Math.round(Number(i && i.amount));
-      if (!i || !(amount > 0) || typeof i.month !== 'string' || !/^\d{4}-\d{2}$/.test(i.month)) continue;
+      if (!i || !(amount > 0) || !isMonth(i.month)) continue;
       incomes.push({
-        id: String(i.id || newId()),
-        month: i.month,
+        id: String(i.id || newId()), month: i.month,
         name: typeof i.name === 'string' && i.name.trim() ? i.name.trim().slice(0, 20) : '収入',
-        amount: Math.min(amount, 10 ** MAX_DIGITS - 1),
+        amount: Math.min(amount, maxAmount),
       });
+    }
+    const budgets = {};
+    const bIn = obj.budgets && typeof obj.budgets === 'object' ? obj.budgets : {};
+    for (const month of Object.keys(bIn)) {
+      if (!isMonth(month) || !bIn[month] || typeof bIn[month] !== 'object') continue;
+      for (const id of Object.keys(bIn[month])) {
+        const v = Math.round(Number(bIn[month][id]));
+        if (!seen.has(id) || !(v > 0)) continue;
+        if (!budgets[month]) budgets[month] = {};
+        budgets[month][id] = Math.min(v, maxAmount);
+      }
+    }
+    const lineName = (v, fallback) => (typeof v.name === 'string' && v.name.trim() ? v.name.trim().slice(0, 20) : fallback);
+    const money0 = (n) => Math.min(Math.max(Math.round(Number(n)) || 0, 0), maxAmount);
+    const varis = [];
+    for (const v of Array.isArray(obj.varis) ? obj.varis : []) {
+      if (!v || !isMonth(v.month)) continue;
+      varis.push({ id: String(v.id || newId()), month: v.month, name: lineName(v, '項目'), day: clampDay(v.day, 0), budget: money0(v.budget), actual: money0(v.actual) });
+    }
+    const specials = [];
+    for (const v of Array.isArray(obj.specials) ? obj.specials : []) {
+      if (!v || !isMonth(v.month) || !(money0(v.amount) > 0)) continue;
+      specials.push({ id: String(v.id || newId()), month: v.month, name: lineName(v, '特別支出'), day: clampDay(v.day, 0), source: typeof v.source === 'string' ? v.source.trim().slice(0, 20) : '', amount: money0(v.amount) });
+    }
+    const savings = [];
+    for (const v of Array.isArray(obj.savings) ? obj.savings : []) {
+      if (!v || !isMonth(v.month) || !(money0(v.amount) > 0)) continue;
+      savings.push({ id: String(v.id || newId()), month: v.month, name: lineName(v, '貯蓄'), amount: money0(v.amount) });
+    }
+    const memos = {};
+    const mIn = obj.memos && typeof obj.memos === 'object' ? obj.memos : {};
+    for (const month of Object.keys(mIn)) {
+      if (isMonth(month) && typeof mIn[month] === 'string' && mIn[month].trim()) memos[month] = mIn[month].slice(0, 2000);
     }
     const st = obj.settings || {};
     return {
-      version: 2,
+      version: 3,
       categories,
       payments,
+      accounts,
       records,
       incomes,
+      fixeds,
+      budgets,
+      varis,
+      specials,
+      savings,
+      memos,
       settings: {
-        budget: Math.max(0, Math.min(Math.round(Number(st.budget) || 0), 10 ** MAX_DIGITS - 1)),
-        lastBackup: typeof st.lastBackup === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(st.lastBackup) ? st.lastBackup : null,
+        lastBackup: isDate(st.lastBackup) ? st.lastBackup : null,
         theme: THEMES.includes(st.theme) ? st.theme : 'auto',
       },
     };
@@ -286,11 +364,8 @@
     today: todayStr(),
     viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計で見ている月
     billMonth: monthOf(todayStr()),  // カードの引き落とし画面で見ている月
-    filterCat: null,     // 支出の表で絞り込んでいるカテゴリ
-    filterPay: null,     // 支出の表で絞り込んでいる支払い方法
+    sum: { range: 'month', cat: '', pay: '', by: 'cat' },  // 集計の画面の条件
   };
-
-  const amountInput = $('#amount-input');
 
   /* ---------- カテゴリ・支払い方法・集計の道具 ---------- */
   function catById(id) {
@@ -330,9 +405,9 @@
       if (k < min) min = k;
       if (k > max) max = k;
     }
-    for (const i of data.incomes) {
-      if (i.month < min) min = i.month;
-      if (i.month > max) max = i.month;
+    for (const x of [...data.incomes, ...data.fixeds, ...data.varis, ...data.specials, ...data.savings]) {
+      if (x.month < min) min = x.month;
+      if (x.month > max) max = x.month;
     }
     return { min, max };
   }
@@ -404,8 +479,6 @@
   const signedMoney = (n) => `${n < 0 ? '−' : ''}${yen(Math.abs(n))}円`;
   const signClass = (n) => (n < 0 ? 'neg' : n > 0 ? 'pos' : '');
   const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt);
-  const incomesOf = (key) => data.incomes.filter((i) => i.month === key);
-  const fixedOf = (key) => data.records.filter((r) => r.fixed && monthOf(r.date) === key).sort(byDate);
 
   // 見出しつきの枠（見出しの右に操作ボタンを置ける）
   function panel(title, actions, ...body) {
@@ -469,334 +542,586 @@
           { v: fmtDate(r.date), cls: 't-date' },
           { v: h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name) },
           !opt.hidePay && { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name), cls: 't-pay' },
-          { v: [r.fixed && h('span', { class: 'badge badge-card' }, '固定費'), r.memo], cls: 't-memo', title: r.memo || null },
+          { v: r.memo, cls: 't-memo', title: r.memo || null },
           { num: true, v: money(r.amount) },
         ].filter(Boolean),
       };
     });
     const head = [
-      { t: opt.dateLabel || '日付' }, { t: 'カテゴリ' },
-      !opt.hidePay && { t: '支払い方法' }, { t: 'メモ' }, { t: '金額', num: true },
+      { t: opt.dateLabel || '日付' }, { t: '項目' },
+      !opt.hidePay && { t: '支払い方法' }, { t: opt.memoLabel || 'メモ' }, { t: '金額', num: true },
     ].filter(Boolean);
     const foot = opt.total && [{ v: `${recs.length}件`, span: head.length - 1 }, { num: true, v: money(sumAmount(recs)) }];
     return table(head, rows, foot);
   }
 
-  /* ---------- 月初 ---------- */
+  /* ---------- 月初（収入・固定費） ---------- */
+  const incomesOf = (key) => data.incomes.filter((i) => i.month === key);
+  const fixedsOf = (key) => data.fixeds.filter((f) => f.month === key).sort((a, b) => (a.day || 99) - (b.day || 99));
+  const budgetsOf = (key) => data.budgets[key] || {};
+  const budgetOf = (key, catId) => budgetsOf(key)[catId] || 0;
+  const accountById = (id) => data.accounts.find((a) => a.id === id);
+  const fixedDayText = (f) => (f.day ? dayLabel(f.day) : '－');
+
+  // その月の支出（記録）の合計
+  const monthSpent = (key) => monthStats(key).total;
+
+  const byDay = (a, b) => (a.day || 99) - (b.day || 99);
+  const variOf = (key) => data.varis.filter((v) => v.month === key).sort(byDay);
+  const specialOf = (key) => data.specials.filter((v) => v.month === key).sort(byDay);
+  const savingOf = (key) => data.savings.filter((v) => v.month === key);
+
+  // 手書きの表の空き行（押すと追加できる）
+  const blankRow = (cols, onClick) => ({ onClick, cls: 'row-blank', cells: Array.from({ length: cols }, () => ({ v: ' ' })) });
+  const padRows = (rows, min, cols, onClick) => { while (rows.length < min) rows.push(blankRow(cols, onClick)); return rows; };
+  const mark = (label, sign) => h('span', null, label, ' ', h('span', { class: 'mark' }, sign));
+
+  // 月初：手書きの家計簿の「月のはじめのページ」と同じ並び
   function renderStart() {
     const key = ui.viewMonth;
-    $('#copy-prev-btn').textContent = `${monthName(shiftMonth(key, -1))}の収入・固定費をコピー`;
+    $('#copy-prev-btn').textContent = `${monthName(shiftMonth(key, -1))}の内容をコピー`;
 
     const incomes = incomesOf(key);
-    const fixed = fixedOf(key);
-    const { total } = monthStats(key);
-    const incomeTotal = sumAmount(incomes);
-    const fixedTotal = sumAmount(fixed);
-    const budget = data.settings.budget;
+    const fixeds = fixedsOf(key);
+    const varis = variOf(key);
+    const specials = specialOf(key);
+    const savings = savingOf(key);
+    const cardList = cards();
+    const cardBill = cardList.reduce((sum, p) => sum + sumAmount(billRecords(p, key)), 0);
 
-    const incomePanel = panel('収入（給料など）',
-      linkBtn('＋ 収入を追加', () => openIncomeSheet(null)),
-      incomes.length
-        ? table([{ t: '項目' }, { t: '金額', num: true }],
-          incomes.map((i) => ({ onClick: () => openIncomeSheet(i), cells: [{ v: i.name }, { num: true, v: money(i.amount) }] })),
-          [{ v: '合計' }, { num: true, v: money(incomeTotal) }])
-        : emptyNote('この月の収入はまだ入っていません。', '「＋ 収入を追加」で入れます（前の月から「コピー」もできます）。'));
-
-    const fixedPanel = panel('毎月の固定費（引落し）',
-      linkBtn('＋ 固定費を追加', () => openRecordSheet(newFixedRecord(key), true)),
-      fixed.length
-        ? table([{ t: '日' }, { t: '項目' }, { t: 'カテゴリ' }, { t: '支払い方法' }, { t: '金額', num: true }],
-          fixed.map((r) => {
-            const c = catById(r.categoryId);
-            const p = payById(r.paymentId);
-            return {
-              onClick: () => openRecordSheet(r, false),
-              cells: [
-                { v: `${dayNum(r.date)}日`, cls: 't-date' },
-                { v: r.memo },
-                { v: h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name) },
-                { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name) },
-                { num: true, v: money(r.amount) },
-              ],
-            };
-          }),
-          [{ v: `${fixed.length}件`, span: 4 }, { num: true, v: money(fixedTotal) }])
-        : emptyNote('この月の固定費はまだ入っていません。', '家賃・保険料・通信費など、毎月決まって出ていくお金を入れます。固定費は支出の記録にも入ります。'));
-
-    const budgetRows = [['1か月の予算', budget > 0 ? money(budget) : '未設定']];
-    if (budget > 0) {
-      budgetRows.push(['使った金額（固定費を含む）', money(total)]);
-      budgetRows.push([budget - total >= 0 ? '予算の残り' : '予算オーバー', money(Math.abs(budget - total)), budget - total >= 0 ? 'pos' : 'neg']);
+    // ⓐ〜ⓕ（手書きのページの記号と同じ）
+    const A = sumAmount(incomes);
+    const B = sumAmount(fixeds) + cardBill;
+    const C = varis.reduce((sum, v) => sum + v.budget, 0);
+    const D = varis.reduce((sum, v) => sum + v.actual, 0);
+    const spentBy = new Map();   // やりくり費の実績＝カード以外（現金・電子マネーなど）で使った分。カード分は翌月の「カード支払い」に入る
+    for (const r of data.records) {
+      if (monthOf(r.date) !== key || payById(r.paymentId).kind === 'card') continue;
+      spentBy.set(r.categoryId, (spentBy.get(r.categoryId) || 0) + r.amount);
     }
-    const budgetPanel = panel('月の予算', linkBtn('予算を変える', openBudgetSheet),
-      kvTable(budgetRows), budget > 0 && h('div', { class: 'panel-pad' }, meterEl(total / budget)));
+    const budgets = budgetsOf(key);
+    const E = [...spentBy.values()].reduce((a, b) => a + b, 0);
+    const F = B + D + E;
+    const yarikuri = A - (B + C);
 
-    const balance = incomeTotal - total;
-    const summaryPanel = panel(`${monthName(key)}のまとめ`, null, kvTable([
-      ['収入の合計', money(incomeTotal)],
-      ['支出の合計', money(total)],
-      ['　うち固定費', money(fixedTotal)],
-      ['収支（収入 − 支出）', signedMoney(balance), signClass(balance)],
+    // ---- 今月の収入
+    const addIncome = () => openIncomeSheet(null);
+    const incomePanel = panel('今月の収入', linkBtn('＋ 追加', addIncome),
+      table([{ t: '内容' }, { t: '金額', num: true }],
+        padRows(incomes.map((i) => ({ onClick: () => openIncomeSheet(i), cells: [{ v: i.name }, { num: true, v: yen(i.amount) }] })), 4, 2, addIncome),
+        [{ v: mark('合計', 'ⓐ') }, { num: true, v: yen(A) }]));
+
+    // ---- クレジットカードのひかえ（使った月ごと。引き落としは翌月以降の「カード支払い」へ）
+    const cardBlocks = cardList.map((p) => {
+      const recs = data.records.filter((r) => r.paymentId === p.id && monthOf(r.date) === key).sort(byDate);
+      const addCard = () => showTab('spend');
+      return h('div', { class: 'card-memo' },
+        h('p', { class: 'card-memo-head' }, dot(p.color), h('b', null, `カード（${p.name}）`), h('span', { class: 'card-memo-rule' }, payRule(p))),
+        table([{ t: '日付' }, { t: '内容' }, { t: '金額', num: true }],
+          padRows(recs.map((r) => ({
+            onClick: () => openRecordSheet(r, false),
+            cells: [{ v: fmtDate(r.date), cls: 't-date' }, { v: r.memo || catById(r.categoryId).name }, { num: true, v: yen(r.amount) }],
+          })), 3, 3, addCard),
+          [{ v: '合計', span: 2 }, { num: true, v: yen(sumAmount(recs)) }]),
+        h('p', { class: 'note note-tight' }, `→ ${p.payOffset === 2 ? '翌々月' : '翌月'}の「カード支払い」へ`));
+    });
+    const cardPanel = panel('クレジットカードのひかえ', h('span', { class: 'panel-note' }, '使った月の分。記録は「週の支出」で入れます'),
+      cardList.length
+        ? h('div', { class: 'card-memo-list' }, cardBlocks)
+        : emptyNote('クレジットカードを登録すると、使った分がここに出ます。', linkBtn('カードを登録する ›', () => openPaymentSheet(null))));
+
+    // ---- 特別支出
+    const addSpecial = () => openLineSheet('special', null);
+    const specialPanel = panel('特別支出', linkBtn('＋ 追加', addSpecial),
+      table([{ t: '日付' }, { t: '内容' }, { t: '出所' }, { t: '金額', num: true }],
+        padRows(specials.map((s) => ({
+          onClick: () => openLineSheet('special', s),
+          cells: [{ v: fixedDayText(s), cls: 't-date' }, { v: s.name }, { v: s.source }, { num: true, v: yen(s.amount) }],
+        })), 3, 4, addSpecial),
+        [{ v: '合計', span: 3 }, { num: true, v: yen(sumAmount(specials)) }]));
+
+    // ---- 出ていくことが決まっているお金（金額が決まっているもの／毎月の金額がかわるもの）
+    const addFixed = () => openFixedSheet(null, '');
+    const fixedRows = fixeds.map((f) => ({
+      onClick: () => openFixedSheet(f, f.accountId),
+      cells: [
+        { v: fixedDayText(f), cls: 't-date' },
+        { v: h('span', null, f.name, f.accountId && accountById(f.accountId) ? h('span', { class: 'tag' }, accountById(f.accountId).name) : null) },
+        { num: true, v: yen(f.amount) },
+      ],
+    }));
+    padRows(fixedRows, 6, 3, addFixed);
+    fixedRows.push({
+      onClick: () => showTab('cards'), cls: 'row-auto',
+      cells: [{ v: '' }, { v: 'カード支払い（自動）' }, { num: true, v: yen(cardBill) }],
+    });
+    const fixedPanelEl = panel('金額が決まっているもの', linkBtn('＋ 追加', addFixed),
+      table([{ t: '日付' }, { t: '内容' }, { t: '金額', num: true }], fixedRows,
+        [{ v: mark('合計', 'ⓑ'), span: 2 }, { num: true, v: yen(B) }]));
+
+    const addVari = () => openLineSheet('vari', null);
+    const variPanel = panel('毎月の金額がかわるもの', linkBtn('＋ 追加', addVari),
+      table([{ t: '日付' }, { t: '内容' }, { t: '予算', num: true }, { t: '実績', num: true }],
+        padRows(varis.map((v) => ({
+          onClick: () => openLineSheet('vari', v),
+          cells: [{ v: fixedDayText(v), cls: 't-date' }, { v: v.name }, { num: true, v: v.budget ? yen(v.budget) : '' }, { num: true, v: v.actual ? yen(v.actual) : '' }],
+        })), 6, 4, addVari),
+        [{ v: '合計', span: 2 }, { num: true, v: mark(yen(C), 'ⓒ') }, { num: true, v: mark(yen(D), 'ⓓ') }]));
+
+    // ---- 今月のやりくり費
+    const yarikuriPanel = panel('今月のやりくり費', null,
+      h('div', { class: 'formula' },
+        h('p', { class: 'formula-text' }, 'ⓐ − (ⓑ + ⓒ)'),
+        h('p', { class: `formula-num ${signClass(yarikuri)}` }, signedMoney(yarikuri)),
+        h('p', { class: 'note note-tight' }, `${yen(A)} − (${yen(B)} + ${yen(C)})`)));
+
+    // ---- やりくり費の内訳（予算はここで入れる）
+    const judgeText = (bud, spent) => (bud > 0 ? (spent <= bud ? '○' : '×') : '－');
+    const lines = [];
+    const budTotalTd = h('td', { class: 't-num' });
+    const restTotalTd = h('td', { class: 't-num' });
+    const judgeTotalTd = h('td', { class: 't-judge' });
+    const catRows = data.categories.map((c) => {
+      const spent = spentBy.get(c.id) || 0;
+      const input = h('input', { class: 'field-input budget-input', type: 'text', inputmode: 'numeric', autocomplete: 'off', 'aria-label': `${c.name}の予算`, placeholder: '0' });
+      const b0 = budgets[c.id] || 0;
+      input.value = b0 > 0 ? yen(b0) : '';
+      const get = attachAmountFormat(input);
+      const restTd = h('td', { class: 't-num' });
+      const judgeTd = h('td', { class: 't-judge' });
+      lines.push({ c, spent, restTd, judgeTd });
+      input.addEventListener('change', () => { setBudget(key, c.id, get()); refreshBudget(); });
+      return h('tr', null, itemTh(c, key), h('td', { class: 't-input' }, input),
+        h('td', { class: 't-num' }, spent > 0 ? yen(spent) : ''), restTd, judgeTd);
+    });
+    function refreshBudget() {
+      let totalBud = 0;
+      for (const l of lines) {
+        const bud = budgetOf(key, l.c.id);
+        totalBud += bud;
+        l.restTd.textContent = bud > 0 ? signedYen(bud - l.spent) : '－';
+        l.restTd.classList.toggle('neg', bud > 0 && bud - l.spent < 0);
+        l.judgeTd.textContent = judgeText(bud, l.spent);
+        l.judgeTd.classList.toggle('neg', bud > 0 && l.spent > bud);
+      }
+      budTotalTd.textContent = totalBud > 0 ? yen(totalBud) : '－';
+      restTotalTd.textContent = totalBud > 0 ? signedYen(totalBud - E) : '－';
+      restTotalTd.classList.toggle('neg', totalBud > 0 && totalBud - E < 0);
+      judgeTotalTd.textContent = judgeText(totalBud, E);
+      judgeTotalTd.classList.toggle('neg', totalBud > 0 && E > totalBud);
+    }
+    const breakdownPanel = panel('やりくり費の内訳', h('span', { class: 'panel-note' }, '予算の欄に金額を入れると、残り・判定が自動で出ます'),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table table-grid' },
+        h('thead', null, h('tr', null, h('th', null, '内容'), h('th', { class: 't-num' }, '予算'), h('th', { class: 't-num' }, '実績'), h('th', { class: 't-num' }, '残り'), h('th', { class: 't-judge' }, '判定'))),
+        h('tbody', null, catRows),
+        h('tfoot', null, h('tr', null, h('td', null, '合計'), budTotalTd, h('td', { class: 't-num' }, mark(yen(E), 'ⓔ')), restTotalTd, judgeTotalTd)))),
+      h('p', { class: 'note note-pad' }, '実績は、現金・電子マネーなどで使った分です（「支出」タブの記録から自動）。カードで使った分は、引き落とされる月の「カード支払い」に入ります。残り＝予算 − 実績、判定＝予算の範囲内なら ○、超えたら ×。項目名を押すと、その月の記録を見られます。'));
+    refreshBudget();
+
+    // ---- 今月のまとめ
+    const summaryPanel = panel('今月のまとめ', h('span', { class: 'panel-note' }, '自動で計算します'), kvTable([
+      [mark('収入の合計', 'ⓐ'), yen(A) + '円'],
+      [mark('支出の合計（ⓑ＋ⓓ＋ⓔ）', 'ⓕ'), yen(F) + '円'],
+      ['今月余ったお金（ⓐ − ⓕ）', signedMoney(A - F), signClass(A - F)],
     ]));
 
-    const list = cards();
-    const cardPanel = panel('カードの支払い金額', h('span', { class: 'panel-note' }, `${monthName(key)}に引き落とされる分`),
-      list.length
-        ? table([{ t: 'カード' }, { t: '引き落とし日' }, { t: '対象の期間' }, { t: '金額', num: true }, { t: '状態' }],
-          list.map((p) => {
-            const info = billInfo(p, key);
-            const amt = sumAmount(billRecords(p, key));
-            const st = billStatus(info, amt);
-            return {
-              onClick: () => { ui.billMonth = key; showTab('cards'); },
-              cells: [
-                { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name) },
-                { v: fmtDate(info.payDate), cls: 't-date' },
-                { v: `${fmtDate(info.start)}〜${fmtDate(info.end)}`, cls: 't-date' },
-                { num: true, v: money(amt) },
-                { v: h('span', { class: `badge ${st.cls}` }, st.label) },
-              ],
-            };
-          }),
-          [{ v: '合計', span: 3 }, { num: true, v: money(list.reduce((sum, p) => sum + sumAmount(billRecords(p, key)), 0)) }, { v: '' }])
-        : emptyNote('クレジットカードを登録すると、この月に引き落とされる金額がここに出ます。', linkBtn('カードを登録する ›', () => openPaymentSheet(null))));
+    // ---- 今月の貯蓄まとめ
+    const addSaving = () => openLineSheet('saving', null);
+    const savingPanel = panel('今月の貯蓄まとめ', linkBtn('＋ 追加', addSaving),
+      table([{ t: '内容' }, { t: '金額', num: true }],
+        padRows(savings.map((s) => ({ onClick: () => openLineSheet('saving', s), cells: [{ v: s.name }, { num: true, v: yen(s.amount) }] })), 3, 2, addSaving),
+        [{ v: '合計' }, { num: true, v: yen(sumAmount(savings)) }]));
 
-    $('#start-body').replaceChildren(h('div', { class: 'grid-2' },
-      h('div', { class: 'col' }, incomePanel, fixedPanel),
-      h('div', { class: 'col' }, budgetPanel, summaryPanel, cardPanel)));
+    // ---- メモ
+    const memoArea = h('textarea', { class: 'field-input memo-area', rows: '6', maxlength: '2000', 'aria-label': 'メモ', placeholder: 'この月のメモ' });
+    memoArea.value = data.memos[key] || '';
+    memoArea.addEventListener('change', () => {
+      const t = memoArea.value.trim();
+      if (t) data.memos[key] = t; else delete data.memos[key];
+      save();
+    });
+    const memoPanel = panel('メモ', null, h('div', { class: 'panel-pad' }, memoArea));
+
+    $('#start-body').replaceChildren(h('div', { class: 'grid-3' },
+      h('div', { class: 'col' }, incomePanel, cardPanel, specialPanel),
+      h('div', { class: 'col' }, fixedPanelEl, yarikuriPanel, breakdownPanel),
+      h('div', { class: 'col' }, variPanel, summaryPanel, savingPanel, memoPanel)));
   }
 
-  function newFixedRecord(key) {
-    return { id: newId(), amount: 0, categoryId: OTHER_ID, paymentId: CASH_ID, date: `${key}-01`, memo: '', createdAt: Date.now(), fixed: true };
+  // 日の選択欄（指定なし／1〜28日／末日）
+  function dayOrNoneSelect(value) {
+    const sel = h('select', { class: 'field-input', 'aria-label': '日' },
+      h('option', { value: '0' }, '指定なし'),
+      Array.from({ length: 28 }, (_, i) => h('option', { value: String(i + 1) }, `${i + 1}日`)),
+      h('option', { value: String(END_OF_MONTH) }, '末日'));
+    sel.value = String(value);
+    return sel;
   }
 
-  // 前の月の収入・固定費を、いま見ている月にコピーする（すでに同じ内容があるものは足さない）
+  // 月初の「かわるもの」「特別支出」「貯蓄」を追加・直す
+  const LINE_KINDS = {
+    vari: { list: 'varis', noun: '毎月の金額がかわるもの', day: true, namePh: '例：電気代', hint: '予算と実績は、わかっているほうだけでも入れられます。' },
+    special: { list: 'specials', noun: '特別支出', day: true, source: true, namePh: '例：お祝い', needAmount: true },
+    saving: { list: 'savings', noun: '貯蓄', namePh: '例：定期預金', needAmount: true },
+  };
+  function openLineSheet(kind, item) {
+    const K = LINE_KINDS[kind];
+    const isNew = !item;
+    const key = ui.viewMonth;
+    const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: K.namePh, 'aria-label': '内容' });
+    nameInput.value = isNew ? '' : item.name;
+    const daySel = K.day ? dayOrNoneSelect(isNew ? 0 : item.day) : null;
+    const sourceInput = K.source ? h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：ボーナス・貯金から', 'aria-label': '出所' }) : null;
+    if (sourceInput) sourceInput.value = isNew ? '' : item.source;
+    const budget = kind === 'vari' ? amountField(isNew ? 0 : item.budget) : null;
+    const actual = kind === 'vari' ? amountField(isNew ? 0 : item.actual) : null;
+    const amount = kind !== 'vari' ? amountField(isNew ? 0 : item.amount) : null;
+
+    const footer = [
+      h('button', {
+        type: 'button', class: 'btn btn-primary',
+        onclick: () => {
+          const name = nameInput.value.trim();
+          if (!name) { nameInput.focus(); showToast('内容を入力してください'); return; }
+          const values = { name };
+          if (daySel) values.day = Number(daySel.value);
+          if (sourceInput) values.source = sourceInput.value.trim();
+          if (kind === 'vari') {
+            values.budget = budget.get();
+            values.actual = actual.get();
+          } else {
+            values.amount = amount.get();
+            if (!values.amount) { amount.input.focus(); showToast('金額を入力してください'); return; }
+          }
+          if (isNew) data[K.list].push({ id: newId(), month: key, ...values });
+          else Object.assign(item, values);
+          save();
+          closeSheet();
+          renderAll();
+          showToast(isNew ? `${K.noun}を追加しました` : `${K.noun}を直しました`);
+        },
+      }, isNew ? '追加' : '保存'),
+    ];
+    if (!isNew) {
+      footer.unshift(h('button', {
+        type: 'button', class: 'btn btn-danger',
+        onclick: async () => {
+          const ok = await confirmDialog({ title: `この${K.noun}を削除しますか？`, message: item.name, okLabel: '削除する', danger: true });
+          if (!ok) return;
+          data[K.list] = data[K.list].filter((x) => x.id !== item.id);
+          save();
+          closeSheet();
+          renderAll();
+          showToast('削除しました');
+        },
+      }, '削除'));
+    }
+    openSheet(isNew ? `${fmtMonth(key)}の${K.noun}を追加` : `${K.noun}を直す`, [
+      field('内容', nameInput),
+      daySel && field('日付', daySel),
+      sourceInput && field('出所', sourceInput),
+      kind === 'vari'
+        ? h('div', { class: 'field-row' }, field('予算', budget.el), field('実績', actual.el))
+        : field('金額', amount.el),
+      K.hint && h('p', { class: 'note' }, K.hint),
+    ], footer);
+  }
+
+  // 前の月の収入・固定費・かわるもの・予算を、いま見ている月にコピーする（すでに同じ内容があるものは足さない）
   async function copyFromPrev() {
     const key = ui.viewMonth;
     const prev = shiftMonth(key, -1);
     const nowInc = incomesOf(key);
-    const nowFix = fixedOf(key);
+    const nowFix = fixedsOf(key);
+    const nowVari = variOf(key);
     const incs = incomesOf(prev).filter((i) => !nowInc.some((x) => x.name === i.name && x.amount === i.amount));
-    const fixes = fixedOf(prev).filter((r) => !nowFix.some((x) => x.memo === r.memo && x.amount === r.amount && x.categoryId === r.categoryId && x.paymentId === r.paymentId));
-    if (!incs.length && !fixes.length) {
-      showToast(`${fmtMonth(prev)}にコピーできる収入・固定費はありません（入っていないか、すでにコピー済みです）`);
+    const fixes = fixedsOf(prev).filter((f) => !nowFix.some((x) => x.name === f.name && x.amount === f.amount && x.accountId === f.accountId));
+    const varis = variOf(prev).filter((v) => !nowVari.some((x) => x.name === v.name));
+    const prevB = budgetsOf(prev);
+    const nowB = budgetsOf(key);
+    const budgetIds = Object.keys(prevB).filter((id) => !(nowB[id] > 0));
+    if (!incs.length && !fixes.length && !varis.length && !budgetIds.length) {
+      showToast(`${fmtMonth(prev)}にコピーできる内容はありません（入っていないか、すでにコピー済みです）`);
       return;
     }
     const ok = await confirmDialog({
       title: `${fmtMonth(prev)}の内容を${fmtMonth(key)}にコピーしますか？`,
-      message: `収入 ${incs.length}件、固定費 ${fixes.length}件を追加します。\n（すでに同じ内容があるものは追加しません）`,
+      message: `収入 ${incs.length}件、金額が決まっているもの ${fixes.length}件、金額がかわるもの ${varis.length}件（予算だけ）、やりくり費の予算 ${budgetIds.length}項目を追加します。\n（すでに同じ内容があるものは追加しません）`,
       okLabel: 'コピーする',
     });
     if (!ok) return;
-    const now = Date.now();
     const newIncs = incs.map((i) => ({ id: newId(), month: key, name: i.name, amount: i.amount }));
-    const newRecs = fixes.map((r, n) => ({ ...r, id: newId(), date: dayOf(key, dayNum(r.date)), createdAt: now + n }));
+    const newFix = fixes.map((f) => ({ id: newId(), month: key, name: f.name, amount: f.amount, accountId: f.accountId, day: f.day }));
+    const newVari = varis.map((v) => ({ id: newId(), month: key, name: v.name, day: v.day, budget: v.budget, actual: 0 }));
     data.incomes.push(...newIncs);
-    data.records.push(...newRecs);
-    if (!save()) {
+    data.fixeds.push(...newFix);
+    data.varis.push(...newVari);
+    if (budgetIds.length && !data.budgets[key]) data.budgets[key] = {};
+    budgetIds.forEach((id) => { data.budgets[key][id] = prevB[id]; });
+    const undo = () => {
       data.incomes = data.incomes.filter((i) => !newIncs.includes(i));
-      data.records = data.records.filter((r) => !newRecs.includes(r));
-      return;
-    }
+      data.fixeds = data.fixeds.filter((f) => !newFix.includes(f));
+      data.varis = data.varis.filter((v) => !newVari.includes(v));
+      budgetIds.forEach((id) => { if (data.budgets[key]) delete data.budgets[key][id]; });
+      if (data.budgets[key] && !Object.keys(data.budgets[key]).length) delete data.budgets[key];
+    };
+    if (!save()) { undo(); return; }
     renderAll();
-    showToast(`収入 ${newIncs.length}件、固定費 ${newRecs.length}件をコピーしました`, {
+    showToast(`収入 ${newIncs.length}件、決まっているもの ${newFix.length}件、かわるもの ${newVari.length}件、予算 ${budgetIds.length}項目をコピーしました`, {
       action: '取り消す',
-      onAction: () => {
-        data.incomes = data.incomes.filter((i) => !newIncs.includes(i));
-        data.records = data.records.filter((r) => !newRecs.includes(r));
-        save();
-        renderAll();
-        showToast('取り消しました');
-      },
+      onAction: () => { undo(); save(); renderAll(); showToast('取り消しました'); },
     });
   }
 
-  /* ---------- 支出 ---------- */
+  /* ---------- 支出（Excel の表のように、次々と入力する） ---------- */
+  const SPEND_BLANK_ROWS = 8;
+  const signedYen = (n) => `${n < 0 ? '−' : ''}${yen(Math.abs(n))}`;
+  const isDateStr = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+
   function renderSpend() {
     const key = ui.viewMonth;
-    fillEntrySelects();
-    renderDate();
-    $('#first-hint').hidden = data.records.length > 0;
-
-    if (ui.filterCat && !data.categories.some((c) => c.id === ui.filterCat)) ui.filterCat = null;
-    if (ui.filterPay && !data.payments.some((p) => p.id === ui.filterPay)) ui.filterPay = null;
-
-    let recs = monthStats(key).recs;
-    if (ui.filterCat) recs = recs.filter((r) => r.categoryId === ui.filterCat);
-    if (ui.filterPay) recs = recs.filter((r) => r.paymentId === ui.filterPay);
-
-    $('#spend-title').textContent = `${fmtMonth(key)}の支出`;
-    const catFilter = selectEl([['', 'カテゴリ：すべて'], ...data.categories.map((c) => [c.id, `${c.icon} ${c.name}`])], ui.filterCat || '', 'カテゴリで絞り込む');
-    catFilter.addEventListener('change', () => { ui.filterCat = catFilter.value || null; renderSpend(); });
-    const payFilter = selectEl([['', '支払い方法：すべて'], ...data.payments.map((p) => [p.id, p.name])], ui.filterPay || '', '支払い方法で絞り込む');
-    payFilter.addEventListener('change', () => { ui.filterPay = payFilter.value || null; renderSpend(); });
-    $('#spend-filters').replaceChildren(catFilter, payFilter);
-
-    $('#spend-list').replaceChildren(recs.length
-      ? recordTable(recs.slice().sort(byNewest), { total: true })
-      : emptyNote(ui.filterCat || ui.filterPay ? '条件に合う記録はありません' : 'この月の記録はまだありません'));
-  }
-
-  // 入力欄のカテゴリ・支払い方法の選択肢
-  function fillEntrySelects() {
     if (!data.payments.some((p) => p.id === ui.paymentId)) ui.paymentId = CASH_ID;
-    if (ui.categoryId && !data.categories.some((c) => c.id === ui.categoryId)) ui.categoryId = null;
-    const cat = $('#cat-select');
-    cat.replaceChildren(h('option', { value: '' }, 'カテゴリを選んでください'),
-      ...data.categories.map((c) => h('option', { value: c.id }, `${c.icon} ${c.name}`)));
-    cat.value = ui.categoryId || '';
-    const pay = $('#pay-select');
-    pay.replaceChildren(...data.payments.map((p) => h('option', { value: p.id }, p.name)));
-    pay.value = ui.paymentId;
-  }
+    const recs = data.records.filter((r) => monthOf(r.date) === key).sort(byDate);
+    let lastDate = recs.length ? recs[recs.length - 1].date : (monthOf(ui.today) === key ? ui.today : `${key}-01`);
+    let lastPay = recs.length ? recs[recs.length - 1].paymentId : ui.paymentId;
+    if (!data.payments.some((p) => p.id === lastPay)) lastPay = CASH_ID;
 
-  function renderDate() {
-    $('#date-input').value = ui.date;
-    $('#date-chip').classList.toggle('is-other-day', ui.date !== ui.today);
-  }
-
-  function nudge(sel) {
-    const el = $(sel);
-    el.classList.remove('is-nudge');
-    void el.offsetWidth; // 動きをやり直すため
-    el.classList.add('is-nudge');
-  }
-
-  function addRecord() {
-    const amount = getAmount();
-    if (!amount) { nudge('#amount-card'); amountInput.focus(); showToast('金額を入力してください'); return; }
-    if (!ui.categoryId) { nudge('#cat-select'); $('#cat-select').focus(); showToast('カテゴリを選んでください'); return; }
-
-    const memoInput = $('#memo-input');
-    const rec = {
-      id: newId(),
-      amount,
-      categoryId: ui.categoryId,
-      paymentId: ui.paymentId,
-      date: ui.date,
-      memo: memoInput.value.trim().slice(0, 40),
-      createdAt: Date.now(),
+    const tbody = h('tbody');
+    const totalTd = h('td', { class: 't-num' });
+    const countTd = h('td', { colspan: '3' });
+    const updateTotal = () => {
+      const list = data.records.filter((r) => monthOf(r.date) === key);
+      countTd.textContent = `${list.length}件　合計`;
+      totalTd.textContent = yen(sumAmount(list));
     };
-    data.records.push(rec);
-    if (!save()) { data.records.pop(); return; }
-    requestPersist();
 
-    amountInput.value = '';
-    ui.categoryId = null;
-    memoInput.value = '';
-    ui.viewMonth = monthOf(rec.date);   // 入れた記録が表に見えるように
-    renderAll();
-    amountInput.focus();
+    function addRow(rec) {
+      let cur = rec;   // 保存済みの記録（空き行は null）
+      const dateIn = h('input', { class: 'cell-input', type: 'date', 'aria-label': '日付' });
+      const catSel = h('select', { class: 'cell-input', 'aria-label': '項目' },
+        h('option', { value: '' }, ''),
+        data.categories.map((c) => h('option', { value: c.id }, `${c.icon} ${c.name}`)));
+      const memoIn = h('input', { class: 'cell-input', type: 'text', maxlength: '40', list: 'memo-list', autocomplete: 'off', 'aria-label': '品目' });
+      const amountIn = h('input', { class: 'cell-input num', type: 'text', inputmode: 'numeric', autocomplete: 'off', 'aria-label': '金額' });
+      const paySel = h('select', { class: 'cell-input', 'aria-label': '支払い方法' },
+        data.payments.map((p) => h('option', { value: p.id }, p.name)));
+      const getAmt = attachAmountFormat(amountIn);
+      const fields = [dateIn, catSel, memoIn, amountIn, paySel];
 
-    const c = catById(rec.categoryId);
-    showToast(`${c.name} ${yen(amount)}円（${payById(rec.paymentId).name}）を記録しました`, {
-      action: '取り消す',
-      onAction: () => {
-        data.records = data.records.filter((r) => r.id !== rec.id);
+      dateIn.value = cur ? cur.date : lastDate;
+      catSel.value = cur ? cur.categoryId : '';
+      memoIn.value = cur ? cur.memo : '';
+      amountIn.value = cur ? yen(cur.amount) : '';
+      paySel.value = cur ? cur.paymentId : lastPay;
+
+      const delBtn = h('button', { type: 'button', class: 'icon-btn row-del', 'aria-label': 'この行を削除', title: 'この行を削除', hidden: !cur }, icon('close'));
+      const td = (el, cls) => h('td', { class: cls || null }, el);
+      const tr = h('tr', { class: cur ? '' : 'is-new' },
+        td(dateIn), td(catSel), td(memoIn), td(amountIn, 't-num'), td(paySel), td(delBtn, 't-del'));
+
+      const commit = () => {
+        const amount = getAmt();
+        const date = dateIn.value;
+        const categoryId = catSel.value;
+        const memo = memoIn.value.trim().slice(0, 40);
+        const paymentId = paySel.value;
+        const filled = amount > 0 && categoryId && isDateStr(date);
+        tr.classList.toggle('is-invalid', !filled && !!(amount || categoryId || memo));
+        if (!filled) return;
+        if (cur) {
+          Object.assign(cur, { amount, categoryId, paymentId, date, memo });
+          save();
+        } else {
+          const r = { id: newId(), amount, categoryId, paymentId, date, memo, createdAt: Date.now() };
+          data.records.push(r);
+          if (!save()) { data.records.pop(); return; }
+          requestPersist();
+          cur = r;
+          tr.classList.remove('is-new');
+          delBtn.hidden = false;
+          lastDate = date;
+          lastPay = paymentId;
+          ui.paymentId = paymentId;
+          if (tr === tbody.lastElementChild) addRow(null);
+        }
+        updateTotal();
+        if (monthOf(date) !== key) showToast(`${fmtMonth(monthOf(date))}の分として記録しました（この表は${fmtMonth(key)}です）`);
+      };
+
+      tr.addEventListener('change', commit);
+      // Enter で次の欄へ。支払い方法で Enter を押すと、次の行の項目へ（日付は前の行と同じ）
+      tr.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || !fields.includes(e.target)) return;
+        e.preventDefault();
+        commit();
+        const i = fields.indexOf(e.target);
+        if (i < fields.length - 1) fields[i + 1].focus();
+        else {
+          const next = tr.nextElementSibling;
+          if (next) next.querySelectorAll('.cell-input')[1].focus();
+        }
+      });
+      delBtn.addEventListener('click', () => {
+        if (!cur) return;
+        const rec0 = cur;
+        data.records = data.records.filter((r) => r.id !== rec0.id);
         save();
-        renderAll();
-        showToast('取り消しました');
-      },
-    });
+        tr.remove();
+        if (!tbody.children.length) addRow(null);
+        updateTotal();
+        showToast(`${catById(rec0.categoryId).name} ${yen(rec0.amount)}円を削除しました`, {
+          action: '取り消す',
+          onAction: () => { data.records.push(rec0); save(); renderAll(); showToast('取り消しました'); },
+        });
+      });
+      tbody.append(tr);
+    }
+
+    recs.forEach(addRow);
+    for (let i = 0; i < SPEND_BLANK_ROWS; i++) addRow(null);
+    updateTotal();
+
+    const memos = [...new Set(data.records.map((r) => r.memo).filter(Boolean))].slice(-300);
+    $('#spend-body').replaceChildren(
+      panel(`${fmtMonth(key)}の支出`,
+        h('button', { type: 'button', class: 'link-btn', onclick: () => { for (let i = 0; i < 5; i++) addRow(null); } }, '＋ 行を増やす'),
+        h('div', { class: 'table-wrap' }, h('table', { class: 'table spend-grid' },
+          h('thead', null, h('tr', null,
+            h('th', { class: 'c-date' }, '日付'), h('th', { class: 'c-cat' }, '項目'), h('th', { class: 'c-memo' }, '品目'),
+            h('th', { class: 't-num c-amount' }, '金額'), h('th', { class: 'c-pay' }, '支払い方法'), h('th', { class: 'c-del' }, ''))),
+          tbody,
+          h('tfoot', null, h('tr', null, countTd, totalTd, h('td', { colspan: '2' }, ''))))),
+        h('p', { class: 'note note-pad' }, '日付・項目・品目・金額・支払い方法を入れると、その行が自動で記録されます（項目と金額が必要です）。Enterキーで次の欄、支払い方法のEnterで次の行へ進みます。入れた行は、あとから直接書きかえたり、右端の×で消したりできます。赤い行は、項目か金額が足りなくて、まだ記録されていません。')),
+      h('datalist', { id: 'memo-list' }, memos.map((m) => h('option', { value: m }))));
   }
 
-  /* ---------- 月間集計 ---------- */
-  function renderSummary() {
-    const key = ui.viewMonth;
-    const cur = monthOf(ui.today);
-    const { recs, total, byCat, byPay } = monthStats(key);
-    const incomeTotal = sumAmount(incomesOf(key));
-    const fixedTotal = sumAmount(fixedOf(key));
-    const prevTotal = monthStats(shiftMonth(key, -1)).total;
-    const budget = data.settings.budget;
-    const balance = incomeTotal - total;
-    const days = key === cur ? dayNum(ui.today) : daysInMonth(key);
+  // 項目名（食費・酒など）：押すと、その月のその項目の記録（金額・メモ）の一覧を出す
+  function itemTh(c, key) {
+    const open = () => openCategoryRecords(c.id, key);
+    return h('th', {
+      scope: 'row', class: 't-item t-link', tabindex: '0', title: `${monthName(key)}の${c.name}の記録を見る`,
+      onclick: open,
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } },
+    }, h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name));
+  }
 
-    // まとめ
-    const rows = [
-      ['収入の合計', money(incomeTotal)],
-      ['支出の合計', money(total)],
-      ['　うち固定費', money(fixedTotal)],
-      ['収支（収入 − 支出）', signedMoney(balance), signClass(balance)],
-    ];
-    if (budget > 0) {
-      rows.push(['予算', money(budget)]);
-      rows.push([budget - total >= 0 ? '予算の残り' : '予算オーバー', money(Math.abs(budget - total)), budget - total >= 0 ? 'pos' : 'neg']);
-    }
-    rows.push([key === cur ? '1日あたりの支出（今日まで）' : '1日あたりの支出', money(Math.round(total / days))]);
-    rows.push(['先月の支出', prevTotal > 0 ? `${money(prevTotal)}（${total - prevTotal >= 0 ? '+' : '−'}${yen(Math.abs(total - prevTotal))}円）` : '記録なし']);
-    rows.push(['記録の件数', `${recs.length}件`]);
-    const summaryPanel = panel(`${fmtMonth(key)}のまとめ`, null, kvTable(rows));
-
-    // カテゴリ別・支払い方法別（行を押すと、支出の表をその条件だけに絞る）
-    const counts = (field) => {
-      const m = new Map();
-      for (const r of recs) m.set(r[field], (m.get(r[field]) || 0) + 1);
-      return m;
-    };
-    const catCount = counts('categoryId');
-    const payCount = counts('paymentId');
-    const goSpend = () => showTab('spend');
-    const catEntries = data.categories.filter((c) => byCat.get(c.id) > 0).map((c) => [c, byCat.get(c.id)]).sort((a, b) => b[1] - a[1]);
-    const catPanel = panel('カテゴリ別', h('span', { class: 'panel-note' }, '行を押すと、支出の表をそのカテゴリに絞ります'),
-      catEntries.length
-        ? table([{ t: 'カテゴリ' }, { t: '金額', num: true }, { t: '割合', num: true }, { t: '' }, { t: '件数', num: true }],
-          catEntries.map(([c, amt]) => ({
-            onClick: () => { ui.filterCat = c.id; ui.filterPay = null; goSpend(); },
-            cells: [
-              { v: h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name) },
-              { num: true, v: money(amt) },
-              { num: true, v: pctText((amt / total) * 100) },
-              { v: barCell((amt / total) * 100, catColor(c)), cls: 't-bar' },
-              { num: true, v: `${catCount.get(c.id)}件` },
-            ],
-          })),
-          [{ v: '合計' }, { num: true, v: money(total) }, { num: true, v: '100%' }, { v: '' }, { num: true, v: `${recs.length}件` }])
-        : emptyNote('この月の記録はまだありません'));
-
-    const payEntries = data.payments.filter((p) => byPay.get(p.id) > 0).map((p) => [p, byPay.get(p.id)]).sort((a, b) => b[1] - a[1]);
-    const payPanel = panel('支払い方法別', h('span', { class: 'panel-note' }, '使った日の月で集計'),
-      payEntries.length
-        ? table([{ t: '支払い方法' }, { t: '金額', num: true }, { t: '割合', num: true }, { t: '' }, { t: '件数', num: true }],
-          payEntries.map(([p, amt]) => ({
-            onClick: () => { ui.filterPay = p.id; ui.filterCat = null; goSpend(); },
-            cells: [
-              { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name, p.kind === 'card' && h('span', { class: 'badge badge-card' }, 'カード')) },
-              { num: true, v: money(amt) },
-              { num: true, v: pctText((amt / total) * 100) },
-              { v: barCell((amt / total) * 100, colorVar(p.color)), cls: 't-bar' },
-              { num: true, v: `${payCount.get(p.id)}件` },
-            ],
-          })),
-          [{ v: '合計' }, { num: true, v: money(total) }, { num: true, v: '100%' }, { v: '' }, { num: true, v: `${recs.length}件` }])
-        : emptyNote('この月の記録はまだありません'));
-
-    // 月ごとの表（ふだんは今月までの12か月。古い月を見ているときはその月のまわり）
-    let end = key > cur ? key : cur;
-    if (key <= shiftMonth(end, -TREND_MONTHS)) end = shiftMonth(key, 6);
-    const months = Array.from({ length: TREND_MONTHS }, (_, i) => shiftMonth(end, i - (TREND_MONTHS - 1)));
-    const lines = months.map((k) => ({ k, inc: sumAmount(incomesOf(k)), out: monthStats(k).total }));
-    const sumInc = lines.reduce((sum, l) => sum + l.inc, 0);
-    const sumOut = lines.reduce((sum, l) => sum + l.out, 0);
-    const monthsPanel = panel('月ごとの収支', h('span', { class: 'panel-note' }, '行を押すとその月へ'),
-      table([{ t: '月' }, { t: '収入', num: true }, { t: '支出', num: true }, { t: '収支', num: true }],
-        lines.map((l) => ({
-          cls: l.k === key ? 'is-current' : null,
-          onClick: () => setViewMonth(l.k),
+  function openCategoryRecords(catId, key) {
+    const c = catById(catId);
+    const list = data.records.filter((r) => r.categoryId === catId && monthOf(r.date) === key).sort(byDate);
+    const body = [list.length
+      ? table([{ t: '日付' }, { t: '支払い方法' }, { t: 'メモ' }, { t: '金額', num: true }],
+        list.map((r) => ({
+          onClick: () => openRecordSheet(r, false),
           cells: [
-            { v: fmtMonth(l.k) },
-            { num: true, v: l.inc > 0 ? money(l.inc) : '－' },
-            { num: true, v: l.out > 0 ? money(l.out) : '－' },
-            { num: true, v: l.inc > 0 || l.out > 0 ? signedMoney(l.inc - l.out) : '－', cls: signClass(l.inc - l.out) },
+            { v: fmtDate(r.date), cls: 't-date' },
+            { v: h('span', { class: 'cell-pay' }, dot(payById(r.paymentId).color), payById(r.paymentId).name) },
+            { v: r.memo, cls: 't-memo', title: r.memo || null },
+            { num: true, v: money(r.amount) },
           ],
         })),
-        [{ v: '12か月の合計' }, { num: true, v: money(sumInc) }, { num: true, v: money(sumOut) }, { num: true, v: signedMoney(sumInc - sumOut), cls: signClass(sumInc - sumOut) }]));
+        [{ v: `${list.length}件`, span: 3 }, { num: true, v: money(sumAmount(list)) }])
+      : emptyNote(`${fmtMonth(key)}の${c.name}の記録はまだありません`)];
+    openSheet(`${fmtMonth(key)}　${c.icon} ${c.name}`, body, [
+      h('button', {
+        type: 'button', class: 'btn btn-primary',
+        onclick: () => {
+          const today = monthOf(ui.today) === key ? ui.today : `${key}-01`;
+          openRecordSheet({ id: newId(), amount: 0, categoryId: catId, paymentId: ui.paymentId, date: today, memo: '', createdAt: Date.now() }, true);
+        },
+      }, '＋ 追加'),
+    ]);
+  }
 
-    $('#summary-body').replaceChildren(h('div', { class: 'grid-2' },
-      h('div', { class: 'col' }, summaryPanel, monthsPanel),
-      h('div', { class: 'col' }, catPanel, payPanel)));
+  /* ---------- 予算（月初の表の中で入れる） ---------- */
+  function setBudget(key, catId, value) {
+    if (value > 0) {
+      if (!data.budgets[key]) data.budgets[key] = {};
+      data.budgets[key][catId] = value;
+    } else if (data.budgets[key]) {
+      delete data.budgets[key][catId];
+      if (!Object.keys(data.budgets[key]).length) delete data.budgets[key];
+    }
+    save();
+  }
 
-    // バックアップのお知らせ
+  /* ---------- 集計（支出の記録を、項目・支払い方法・日付・月ごとに見る） ---------- */
+  function segEl(items, value, label, pick) {
+    return h('div', { class: 'seg', role: 'group', 'aria-label': label },
+      items.map(([v, t]) => h('button', { type: 'button', class: 'pay-btn', 'aria-pressed': String(v === value), onclick: () => pick(v) }, t)));
+  }
+
+  function renderSummary() {
+    const s = ui.sum;
+    const key = ui.viewMonth;
+    if (s.cat && !data.categories.some((c) => c.id === s.cat)) s.cat = '';
+    if (s.pay && !data.payments.some((p) => p.id === s.pay)) s.pay = '';
+    const set = (patch) => { Object.assign(s, patch); renderAll(); };
+
+    const filtered = data.records.filter((r) =>
+      (s.range === 'all' || monthOf(r.date) === key)
+      && (!s.cat || r.categoryId === s.cat)
+      && (!s.pay || r.paymentId === s.pay));
+    const total = sumAmount(filtered);
+
+    const catSel = selectEl([['', 'すべての項目'], ...data.categories.map((c) => [c.id, `${c.icon} ${c.name}`])], s.cat, '項目で絞る');
+    catSel.addEventListener('change', () => set({ cat: catSel.value }));
+    const paySel = selectEl([['', 'すべての支払い方法'], ...data.payments.map((p) => [p.id, p.name])], s.pay, '支払い方法で絞る');
+    paySel.addEventListener('change', () => set({ pay: paySel.value }));
+
+    const controls = h('section', { class: 'panel' },
+      h('div', { class: 'filter-bar' },
+        field('期間', segEl([['month', fmtMonth(key)], ['all', '全期間']], s.range, '期間', (v) => set({ range: v }))),
+        field('項目', catSel),
+        field('支払い方法', paySel),
+        field('集計のしかた', segEl([['cat', '項目別'], ['pay', '支払い方法別'], ['date', '日付別'], ['month', '月別']], s.by, '集計のしかた', (v) => set({ by: v }))),
+        (s.cat || s.pay) && h('button', { type: 'button', class: 'btn btn-ghost btn-inline', onclick: () => set({ cat: '', pay: '' }) }, '絞りこみを外す')));
+
+    // グループごとの件数・金額
+    const groups = new Map();
+    for (const r of filtered) {
+      const k = s.by === 'cat' ? r.categoryId : s.by === 'pay' ? r.paymentId : s.by === 'date' ? r.date : monthOf(r.date);
+      const g = groups.get(k) || { n: 0, sum: 0 };
+      g.n += 1;
+      g.sum += r.amount;
+      groups.set(k, g);
+    }
+    const keys = [...groups.keys()];
+    if (s.by === 'cat' || s.by === 'pay') keys.sort((a, b) => groups.get(b).sum - groups.get(a).sum);
+    else keys.sort();
+    const label = (k) => {
+      if (s.by === 'cat') { const c = catById(k); return h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name); }
+      if (s.by === 'pay') { const p = payById(k); return h('span', { class: 'cell-pay' }, dot(p.color), p.name); }
+      if (s.by === 'date') return fmtDate(k);
+      return fmtMonth(k);
+    };
+    const barColor = (k) => (s.by === 'cat' ? catColor(catById(k)) : s.by === 'pay' ? colorVar(payById(k).color) : 'var(--color-primary)');
+    const headName = { cat: '項目', pay: '支払い方法', date: '日付', month: '月' }[s.by];
+    const rows = keys.map((k) => {
+      const g = groups.get(k);
+      const pct = total > 0 ? (g.sum / total) * 100 : 0;
+      const onClick = s.by === 'cat' ? () => set({ cat: s.cat === k ? '' : k })
+        : s.by === 'pay' ? () => set({ pay: s.pay === k ? '' : k })
+          : s.by === 'month' ? () => { ui.viewMonth = k; set({ range: 'month' }); } : null;
+      return {
+        onClick,
+        cells: [{ v: label(k), cls: s.by === 'date' ? 't-date' : null }, { num: true, v: `${g.n}件` }, { num: true, v: money(g.sum) }, { v: barCell(pct, barColor(k)), cls: 't-bar' }, { num: true, v: pctText(pct) }],
+      };
+    });
+    const groupPanel = panel(`${headName}ごとの合計`,
+      h('span', { class: 'panel-note' }, s.by === 'cat' || s.by === 'pay' ? '行を押すと、その条件で絞りこめます' : s.by === 'month' ? '行を押すと、その月を見られます' : ''),
+      rows.length
+        ? table([{ t: headName }, { t: '件数', num: true }, { t: '金額', num: true }, { t: '割合' }, { t: '', num: true }], rows,
+          [{ v: '合計' }, { num: true, v: `${filtered.length}件` }, { num: true, v: money(total) }, { v: '', span: 2 }])
+        : emptyNote('この条件の記録はありません'));
+
+    const sorted = [...filtered].sort(byNewest);
+    const listPanel = panel(`記録の一覧（${filtered.length}件）`, h('span', { class: 'panel-note' }, '行を押すと直せます'),
+      filtered.length ? recordTable(sorted, { total: true, memoLabel: '品目' }) : emptyNote('この条件の記録はありません'));
+
+    $('#summary-body').replaceChildren(controls, h('div', { class: 'grid-2' }, h('div', { class: 'col' }, groupPanel), h('div', { class: 'col' }, listPanel)));
+  }
+
+  function renderReminder() {
     const last = data.settings.lastBackup;
     $('#backup-reminder').hidden = !(data.records.length >= 20 && (!last || daysBetween(last, ui.today) >= BACKUP_REMIND_DAYS));
   }
@@ -858,7 +1183,7 @@
       h('b', { class: 'num' }, money(total)),
       h('p', { class: 'bill-meta' }, '引き落とし日 ', h('b', null, fmtDate(info.payDate)), `　対象：${fmtDate(info.start)}〜${fmtDate(info.end)}のご利用分　（${payRule(p)}）`),
       recs.length
-        ? recordTable(recs, { hidePay: true, dateLabel: '使った日' })
+        ? recordTable(recs, { hidePay: true, dateLabel: '日付', memoLabel: '品名' })
         : emptyNote('この期間のご利用はありません'));
   }
 
@@ -868,7 +1193,7 @@
   function renderMonthNav() {
     const key = ui.viewMonth;
     const range = monthRange();
-    $('#month-nav').hidden = !MONTH_TABS.includes(ui.tab);
+    $('#month-nav').hidden = !MONTH_TABS.includes(ui.tab) || (ui.tab === 'summary' && ui.sum.range === 'all');
     $('#month-title').textContent = fmtMonth(key);
     $('#prev-month').disabled = key <= range.min;
     $('#next-month').disabled = key >= range.max;
@@ -896,6 +1221,12 @@
           h('span', { class: 'cat-row-sub' }, p.kind === 'card' ? payRule(p) : p.kind === 'cash' ? '手元のお金' : '電子マネー・口座振替など（締め日なし）')),
         h('span', { class: `badge${p.kind === 'card' ? ' badge-card' : ''}` }, PAY_KIND_LABEL[p.kind])),
       moveButtons(list, i, p.name))));
+
+    $('#account-list').replaceChildren(...(data.accounts.length
+      ? data.accounts.map((a, i, list) => h('li', { class: 'cat-row' },
+        h('button', { type: 'button', class: 'cat-row-main', onclick: () => openAccountSheet(a) }, h('span', { class: 'cat-row-name' }, a.name)),
+        moveButtons(list, i, a.name)))
+      : [h('li', { class: 'empty-s' }, 'まだ口座がありません')]));
 
     const last = data.settings.lastBackup;
     $('#last-backup').textContent = last ? `最後のバックアップ：${fmtFullDate(last)}` : 'まだバックアップしていません';
@@ -992,7 +1323,6 @@
     input.addEventListener('compositionend', format);
     return () => Number(input.value.replace(/[^0-9]/g, '')) || 0;
   }
-  const getAmount = attachAmountFormat(amountInput);
 
   function amountField(initial) {
     const input = h('input', {
@@ -1015,15 +1345,14 @@
     return box;
   }
 
-  // 支出・固定費の記録を直す（isNew なら新しく追加する）
+  // 支出の記録を直す（isNew なら新しく追加する）
   function openRecordSheet(rec, isNew) {
-    const fixedMode = !!rec.fixed;
     const amount = amountField(rec.amount);
-    const catSel = selectEl(data.categories.map((c) => [c.id, `${c.icon} ${c.name}`]), rec.categoryId, 'カテゴリ');
+    const catSel = selectEl(data.categories.map((c) => [c.id, `${c.icon} ${c.name}`]), rec.categoryId, '項目');
     const paySel = selectEl(data.payments.map((p) => [p.id, p.name]), rec.paymentId, '支払い方法');
     const dateInput = h('input', { class: 'field-input', type: 'date', 'aria-label': '日付' });
     dateInput.value = rec.date;
-    const memoInput = h('input', { class: 'field-input', type: 'text', maxlength: '40', placeholder: fixedMode ? '例：家賃' : 'なくてもOK', 'aria-label': fixedMode ? '項目名' : 'メモ' });
+    const memoInput = h('input', { class: 'field-input', type: 'text', maxlength: '40', placeholder: 'なくてもOK', 'aria-label': 'メモ' });
     memoInput.value = rec.memo;
 
     const footer = [
@@ -1032,10 +1361,8 @@
         onclick: () => {
           const value = amount.get();
           if (!value) { amount.input.focus(); showToast('金額を入力してください'); return; }
-          const memo = memoInput.value.trim().slice(0, 40);
-          if (fixedMode && !memo) { memoInput.focus(); showToast('項目名を入力してください'); return; }
           const date = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : rec.date;
-          Object.assign(rec, { amount: value, categoryId: catSel.value, paymentId: paySel.value, date, memo });
+          Object.assign(rec, { amount: value, categoryId: catSel.value, paymentId: paySel.value, date, memo: memoInput.value.trim().slice(0, 40) });
           if (isNew) data.records.push(rec);
           save();
           closeSheet();
@@ -1064,12 +1391,109 @@
       }, '削除'));
     }
 
-    openSheet(isNew ? '固定費を追加' : fixedMode ? '固定費を直す' : '記録を直す', [
+    openSheet(isNew ? '支出を追加' : '記録を直す', [
       field('金額', amount.el),
-      h('div', { class: 'field-row' }, field('カテゴリ', catSel), field('支払い方法', paySel)),
-      h('div', { class: 'field-row' }, field('日付', dateInput), field(fixedMode ? '項目名' : 'メモ', memoInput)),
-      fixedMode && h('p', { class: 'note' }, '固定費は、この日付の支出としても数えます。'),
+      h('div', { class: 'field-row' }, field('項目', catSel), field('支払い方法', paySel)),
+      h('div', { class: 'field-row' }, field('日付', dateInput), field('メモ（品名など）', memoInput)),
     ], footer);
+  }
+
+  // 固定費（現金支出・口座引落）を追加・直す
+  function openFixedSheet(f, presetAccount) {
+    const isNew = !f;
+    const key = ui.viewMonth;
+    const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：国民健康保険', 'aria-label': '項目名' });
+    nameInput.value = isNew ? '' : f.name;
+    const amount = amountField(isNew ? 0 : f.amount);
+    const accSel = selectEl([['', '現金支出（固定）'], ...data.accounts.map((a) => [a.id, `口座引落：${a.name}`])], isNew ? (presetAccount || '') : f.accountId, '支払い先');
+    const daySel = h('select', { class: 'field-input', 'aria-label': '日' },
+      h('option', { value: '0' }, '指定なし'),
+      Array.from({ length: 28 }, (_, i) => h('option', { value: String(i + 1) }, `${i + 1}日`)),
+      h('option', { value: String(END_OF_MONTH) }, '末日'));
+    daySel.value = String(isNew ? 0 : f.day);
+
+    const footer = [
+      h('button', {
+        type: 'button', class: 'btn btn-primary',
+        onclick: () => {
+          const name = nameInput.value.trim();
+          const value = amount.get();
+          if (!name) { nameInput.focus(); showToast('項目名を入力してください'); return; }
+          if (!value) { amount.input.focus(); showToast('金額を入力してください'); return; }
+          const values = { name, amount: value, accountId: accSel.value, day: Number(daySel.value) };
+          if (isNew) data.fixeds.push({ id: newId(), month: key, ...values });
+          else Object.assign(f, values);
+          save();
+          closeSheet();
+          renderAll();
+          showToast(isNew ? '固定費を追加しました' : '固定費を直しました');
+        },
+      }, isNew ? '追加' : '保存'),
+    ];
+    if (!isNew) {
+      footer.unshift(h('button', {
+        type: 'button', class: 'btn btn-danger',
+        onclick: async () => {
+          const ok = await confirmDialog({ title: 'この固定費を削除しますか？', message: `${f.name}　${yen(f.amount)}円`, okLabel: '削除する', danger: true });
+          if (!ok) return;
+          data.fixeds = data.fixeds.filter((x) => x.id !== f.id);
+          save();
+          closeSheet();
+          renderAll();
+          showToast('削除しました');
+        },
+      }, '削除'));
+    }
+    openSheet(isNew ? `${fmtMonth(key)}の固定費を追加` : '固定費を直す', [
+      field('項目名', nameInput),
+      field('金額', amount.el),
+      h('div', { class: 'field-row' }, field('支払い先', accSel), field('支払い・引落の日', daySel)),
+      h('p', { class: 'note' }, 'この月だけの金額です。毎月同じなら、次の月の月初で「前の月の内容をコピー」を使うと楽です。'),
+    ], footer);
+  }
+
+  // 口座引落の口座を追加・直す
+  function openAccountSheet(acc) {
+    const isNew = !acc;
+    const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '12', placeholder: '例：JA', 'aria-label': '口座の名前' });
+    nameInput.value = isNew ? '' : acc.name;
+    const footer = [
+      h('button', {
+        type: 'button', class: 'btn btn-primary',
+        onclick: () => {
+          const name = nameInput.value.trim();
+          if (!name) { nameInput.focus(); showToast('名前を入力してください'); return; }
+          if (data.accounts.some((a) => a.name === name && (isNew || a.id !== acc.id))) { nameInput.focus(); showToast('同じ名前の口座があります'); return; }
+          if (isNew) data.accounts.push({ id: `a${newId()}`, name });
+          else acc.name = name;
+          save();
+          closeSheet();
+          renderAll();
+          showToast(isNew ? `「${name}」を追加しました` : `「${name}」を保存しました`);
+        },
+      }, isNew ? '追加' : '保存'),
+    ];
+    if (!isNew) {
+      footer.unshift(h('button', {
+        type: 'button', class: 'btn btn-danger',
+        onclick: async () => {
+          const count = data.fixeds.filter((x) => x.accountId === acc.id).length;
+          const ok = await confirmDialog({
+            title: `「${acc.name}」を削除しますか？`,
+            message: count > 0 ? `この口座の固定費 ${count}件は「現金支出（固定）」に移ります。` : '',
+            okLabel: '削除する', danger: true,
+          });
+          if (!ok) return;
+          data.fixeds.forEach((x) => { if (x.accountId === acc.id) x.accountId = ''; });
+          data.accounts = data.accounts.filter((a) => a.id !== acc.id);
+          save();
+          closeSheet();
+          renderAll();
+          showToast(`「${acc.name}」を削除しました`);
+        },
+      }, '削除'));
+    }
+    openSheet(isNew ? '口座を追加' : '口座を直す', [field('口座の名前', nameInput)], footer);
   }
 
   // 収入（給料など）を追加・直す
@@ -1112,31 +1536,6 @@
       }, '削除'));
     }
     openSheet(isNew ? `${fmtMonth(key)}の収入を追加` : '収入を直す', [field('項目', nameInput), field('金額', amount.el)], footer);
-  }
-
-  function openBudgetSheet() {
-    const amount = amountField(data.settings.budget);
-    const apply = (value, message) => {
-      data.settings.budget = value;
-      save();
-      closeSheet();
-      renderAll();
-      showToast(message);
-    };
-    openSheet('1か月の予算', [
-      h('p', { class: 'note' }, '1か月に使ってよい金額の目安です。月初・月間集計に「残り金額」が出ます。毎月同じ金額を使います。'),
-      field('予算', amount.el),
-    ], [
-      h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => apply(0, '予算を使わない設定にしました') }, '予算なし'),
-      h('button', {
-        type: 'button', class: 'btn btn-primary',
-        onclick: () => {
-          const value = amount.get();
-          if (!value) { amount.input.focus(); showToast('金額を入力してください'); return; }
-          apply(value, '予算を保存しました');
-        },
-      }, '保存'),
-    ]);
   }
 
   function unusedColor(list) {
@@ -1210,7 +1609,7 @@
           data.records.forEach((r) => { if (r.categoryId === cat.id) r.categoryId = OTHER_ID; });
           data.categories = data.categories.filter((c) => c.id !== cat.id);
           if (ui.categoryId === cat.id) ui.categoryId = null;
-          if (ui.filterCat === cat.id) ui.filterCat = null;
+          Object.keys(data.budgets).forEach((m) => { delete data.budgets[m][cat.id]; if (!Object.keys(data.budgets[m]).length) delete data.budgets[m]; });
           save();
           closeSheet();
           renderAll();
@@ -1312,7 +1711,6 @@
           data.records.forEach((r) => { if (r.paymentId === pay.id) r.paymentId = CASH_ID; });
           data.payments = data.payments.filter((p) => p.id !== pay.id);
           if (ui.paymentId === pay.id) ui.paymentId = CASH_ID;
-          if (ui.filterPay === pay.id) ui.filterPay = null;
           save();
           closeSheet();
           renderAll();
@@ -1416,8 +1814,6 @@
     data = imported;
     if (!save()) { data = before; return; }
     ui.categoryId = null;
-    ui.filterCat = null;
-    ui.filterPay = null;
     renderAll();
     showToast('バックアップから戻しました');
   }
@@ -1429,12 +1825,12 @@
       return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
     };
     const slash = (d) => d.replace(/-/g, '/');
-    const rows = [['日付', 'カテゴリ', '支払い方法', '金額', 'メモ', '引き落とし予定日', '区分']];
+    const rows = [['日付', 'カテゴリ', '支払い方法', '金額', 'メモ', '引き落とし予定日']];
     const sorted = data.records.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
     for (const r of sorted) {
       const p = payById(r.paymentId);
       const bill = p.kind === 'card' ? slash(billInfo(p, billMonthOf(p, r.date)).payDate) : '';
-      rows.push([slash(r.date), catById(r.categoryId).name, p.name, r.amount, r.memo, bill, r.fixed ? '固定費' : '']);
+      rows.push([slash(r.date), catById(r.categoryId).name, p.name, r.amount, r.memo, bill]);
     }
     // 先頭の ﻿（BOM）は、Excelで開いたときに文字化けしないための印
     const csv = '﻿' + rows.map((row) => row.map(cell).join(',')).join('\r\n');
@@ -1445,10 +1841,11 @@
   function renderAll() {
     renderStart();
     renderSpend();
-    renderSummary();
     renderCards();
+    renderSummary();
     renderSettings();
     renderMonthNav();
+    renderReminder();
   }
 
   function showTab(name) {
@@ -1457,7 +1854,7 @@
     $$('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
     renderAll();
     window.scrollTo(0, 0);
-    if (name === 'spend') amountInput.focus();
+    if (name === 'spend') { const el = $('#spend-body tr.is-new select'); if (el) el.focus(); }
   }
 
   // 日付が変わったら「今日」を新しい日に合わせる（開いたまま日をまたいだとき）
@@ -1484,22 +1881,9 @@
   function init() {
     $('#app-version').textContent = APP_VERSION;
 
-    // 支出の入力欄（金額やメモの欄で Enter を押しても記録できる）
-    $('#entry-form').addEventListener('submit', (e) => { e.preventDefault(); addRecord(); });
-    $('#cat-select').addEventListener('change', (e) => { ui.categoryId = e.target.value || null; });
-    $('#pay-select').addEventListener('change', (e) => { ui.paymentId = e.target.value; });
-    const dateInput = $('#date-input');
-    dateInput.addEventListener('change', () => {
-      ui.date = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : ui.today;
-      renderDate();
-    });
-    $('#today-btn').addEventListener('click', () => { ui.date = ui.today; renderDate(); });
-
-    // キーボード：Esc で小窓を閉じる。支出の画面では、どこにいても数字を打てば金額の欄に入る
+    // キーボード：Esc で小窓を閉じる
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && sheetOpen && $('#dialog-root').hidden) { closeSheet(); return; }
-      if (ui.tab !== 'spend' || sheetOpen || !$('#dialog-root').hidden || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (/^[0-9]$/.test(e.key) && !e.target.closest('input, textarea, select')) amountInput.focus();
+      if (e.key === 'Escape' && sheetOpen && $('#dialog-root').hidden) closeSheet();
     });
 
     // 上のタブと、表示する月
@@ -1521,6 +1905,7 @@
     }));
     $('#add-cat-btn').addEventListener('click', () => openCategorySheet(null));
     $('#add-pay-btn').addEventListener('click', () => openPaymentSheet(null));
+    $('#add-account-btn').addEventListener('click', () => openAccountSheet(null));
     $('#export-btn').addEventListener('click', exportBackup);
     $('#csv-btn').addEventListener('click', exportCsv);
     const fileInput = $('#import-file');
@@ -1540,7 +1925,6 @@
     applyTheme();
     registerServiceWorker();
     renderAll();
-    amountInput.focus();
   }
 
   init();

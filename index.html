@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>かんたん家計簿</title>
-  <meta name="description" content="月初・支出・月間集計のタブで使える、ログイン不要の家計簿">
+  <meta name="description" content="月初・支出・集計・クレジットのタブで使える、手書きの家計簿に似た、ログイン不要の家計簿">
   <!-- 明るい画面・暗い画面の両方に対応していることをブラウザに伝える -->
   <meta name="color-scheme" content="light dark">
   <!-- アプリとして入れたときの上の帯の色（起動後は design/theme.css の --color-statusbar に自動で合わせます） -->
@@ -32,8 +32,8 @@
       <nav class="tabs" role="tablist" aria-label="画面の切りかえ">
         <button type="button" class="tab" role="tab" data-tab="start" aria-selected="false">月初</button>
         <button type="button" class="tab" role="tab" data-tab="spend" aria-selected="true">支出</button>
-        <button type="button" class="tab" role="tab" data-tab="summary" aria-selected="false">月間集計</button>
-        <button type="button" class="tab" role="tab" data-tab="cards" aria-selected="false">カード</button>
+        <button type="button" class="tab" role="tab" data-tab="summary" aria-selected="false">集計</button>
+        <button type="button" class="tab" role="tab" data-tab="cards" aria-selected="false">クレジット</button>
         <button type="button" class="tab" role="tab" data-tab="settings" aria-selected="false">設定</button>
       </nav>
       <div class="month-nav" id="month-nav">
@@ -53,62 +53,24 @@
       <!-- ===== 月初：月の始めに入れるもの ===== -->
       <section class="view" data-view="start" aria-label="月初">
         <div class="toolbar">
-          <p class="toolbar-text">月の始めに、収入・固定費・予算を入れておきます。カードの支払い金額は、支出の記録から自動で出ます。</p>
+          <p class="toolbar-text">月の始めに、収入・出ていくことが決まっているお金・特別支出などを入れておきます（手書きの家計簿の月のページと同じ並びです）。やりくり費の予算は、表の「予算」の欄に直接入れます。使ったお金は「支出」タブで入れます。</p>
           <button type="button" class="btn btn-ghost btn-inline" id="copy-prev-btn"></button>
         </div>
         <div id="start-body"></div>
       </section>
 
-      <!-- ===== 支出 ===== -->
+      <!-- ===== 支出：Excel の表のように次々と入力 ===== -->
       <section class="view is-active" data-view="spend" aria-label="支出">
-        <form class="panel entry-bar" id="entry-form" autocomplete="off" novalidate>
-          <div class="entry-fields">
-            <div class="entry-field">
-              <label class="field-label" for="date-input">日付</label>
-              <div class="date-box" id="date-chip">
-                <input class="field-input" type="date" id="date-input">
-                <button type="button" class="chip-btn" id="today-btn">今日</button>
-              </div>
-            </div>
-            <div class="entry-field">
-              <label class="field-label" for="cat-select">カテゴリ</label>
-              <select class="field-input" id="cat-select"></select>
-            </div>
-            <div class="entry-field">
-              <label class="field-label" for="pay-select">支払い方法</label>
-              <select class="field-input" id="pay-select"></select>
-            </div>
-            <div class="entry-field entry-amount">
-              <label class="field-label" for="amount-input">金額</label>
-              <div class="field-amount" id="amount-card">
-                <input class="field-input" type="text" inputmode="numeric" id="amount-input" placeholder="0">
-              </div>
-            </div>
-            <div class="entry-field entry-memo">
-              <label class="field-label" for="memo-input">メモ</label>
-              <input class="field-input" type="text" id="memo-input" maxlength="40" placeholder="なくてもOK">
-            </div>
-            <button type="submit" class="btn btn-primary btn-inline entry-submit" id="save-btn">追加<span class="kbd">Enter</span></button>
-          </div>
-          <p class="hint" id="first-hint">金額を入れて、カテゴリを選んで、Enterキー（または「追加」）で記録します。</p>
-        </form>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2 class="panel-title" id="spend-title"></h2>
-            <div class="panel-actions" id="spend-filters"></div>
-          </div>
-          <div class="panel-body" id="spend-list"></div>
-        </section>
+        <div id="spend-body"></div>
       </section>
 
-      <!-- ===== 月間集計 ===== -->
-      <section class="view" data-view="summary" aria-label="月間集計">
+      <!-- ===== 集計 ===== -->
+      <section class="view" data-view="summary" aria-label="集計">
         <div id="summary-body"></div>
       </section>
 
-      <!-- ===== カード ===== -->
-      <section class="view" data-view="cards" aria-label="カード">
+      <!-- ===== クレジット ===== -->
+      <section class="view" data-view="cards" aria-label="クレジット">
         <div id="cards-body"></div>
       </section>
 
@@ -157,6 +119,15 @@
                 <p class="note">クレジットカードは「締め日」と「支払日」を登録すると、引き落とされる月ごとの金額がわかります。</p>
                 <ul class="cat-list" id="pay-setting-list"></ul>
                 <button type="button" class="btn btn-ghost" id="add-pay-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>カード・支払い方法を追加</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2 class="panel-title">口座（口座引落の分け方）</h2></div>
+              <div class="panel-body panel-pad">
+                <p class="note">月初の「口座引落」の表は、ここに登録した口座ごとに分かれます（例：JA・ゆうちょ・北洋）。</p>
+                <ul class="cat-list" id="account-list"></ul>
+                <button type="button" class="btn btn-ghost" id="add-account-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>口座を追加</button>
               </div>
             </section>
 
