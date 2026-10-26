@@ -478,3 +478,11 @@ select.field-input { padding-right: 0.5rem; cursor: pointer; }
 .filter-bar .field { margin: 0; }
 .filter-bar select.field-input { min-width: 12rem; }
 .spend-grid { min-width: 56rem; } .spend-grid th.c-memo { min-width: 14rem; }
+
+/* ---------- 口座（残高・入金・出金・チャージ） ---------- */
+.row-actions { display: inline-flex; gap: 0.5rem; justify-content: flex-end; }
+.table td .row-actions { width: 100%; }
+.table tbody tr.row-future td { color: var(--color-text-sub); font-style: italic; }
+.check-row { display: flex; align-items: center; gap: 0.625rem; margin: 0.75rem 0; font-weight: var(--font-weight-bold); cursor: pointer; }
+.check-row input { width: 1.125rem; height: 1.125rem; accent-color: var(--color-primary); }
+.panel-actions .field-input { width: auto; min-width: 12rem; }

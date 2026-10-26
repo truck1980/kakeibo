@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '5.1.0';
+  const APP_VERSION = '6.0.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
@@ -35,7 +35,10 @@
   const DEFAULT_PAYMENTS = [
     { id: CASH_ID, name: '現金', kind: 'cash', color: CASH_COLOR },
   ];
-  const PAY_KIND_LABEL = { cash: '現金', card: 'カード', other: 'その他' };
+  // bank＝銀行口座で払う（口座を登録すると自動で作られる）。other のうち prepaid＝チャージして使う電子マネー（残高を管理する）
+  const PAY_KIND_LABEL = { cash: '現金', card: 'カード', bank: '口座', other: 'その他' };
+  const MOVE_LABEL = { deposit: '入金', withdraw: '出金', charge: 'チャージ' };
+  const BALANCE_DIGITS = 9;    // 残高の入力は9けたまで
   // カードを新しく登録するときの最初の値（末日締め・翌月27日払い）
   const CARD_DEFAULT = { closingDay: END_OF_MONTH, payOffset: 1, payDay: 27 };
 
@@ -165,9 +168,10 @@
       version: 3,
       categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
       payments: DEFAULT_PAYMENTS.map((p) => ({ ...p })),
-      accounts: [],     // 口座引落の口座 { id, name }
+      accounts: [],     // 銀行口座 { id, name, openingBalance（基準日の始まりの残高）, openingDate }
+      moves: [],        // 口座の入金・出金、電子マネーのチャージ { id, date, type, accountId, payId, fromType, fromId, amount, memo, createdAt }
       records: [],      // 支出の記録
-      incomes: [],      // 月初の収入 { id, month, name, amount }
+      incomes: [],      // 月初の収入 { id, month, name, amount, accountId（入金される口座・空＝なし）, day（0＝指定なし） }
       fixeds: [],       // 月初の固定費 { id, month, name, amount, accountId（空＝現金支出）, day（0＝指定なし） }
       budgets: {},      // 項目ごとの月の予算 { 'YYYY-MM': { 項目id: 金額 } }
       varis: [],        // 月初の「毎月の金額がかわるもの」 { id, month, name, day, budget, actual }
@@ -188,6 +192,16 @@
     return (n >= 1 && n <= 28) || n === END_OF_MONTH ? n : fallback;
   }
 
+  // 口座を登録すると「口座」という支払い方法が自動でできる（デビットカード・口座払いの支出用）。口座の名前と同じにそろえる
+  function ensureBankPayments(accounts, payments) {
+    for (const a of accounts) {
+      const name = `${a.name}（口座）`;
+      const pay = payments.find((p) => p.kind === 'bank' && p.accountId === a.id);
+      if (pay) pay.name = name;
+      else payments.push({ id: `b${a.id}`, name, kind: 'bank', color: unusedColor(payments), accountId: a.id });
+    }
+  }
+
   // 保存データ・バックアップファイルの中身を点検して、正しい形にそろえる
   // （支払い方法が入っていない古いデータは、記録をすべて「現金」として読みこむ）
   function normalize(obj) {
@@ -195,6 +209,9 @@
       throw new Error('家計簿のデータではありません');
     }
     const maxAmount = 10 ** MAX_DIGITS - 1;
+    const maxBalance = 10 ** BALANCE_DIGITS - 1;
+    const money0 = (n) => Math.min(Math.max(Math.round(Number(n)) || 0, 0), maxAmount);
+    const balance0 = (n) => Math.min(Math.max(Math.round(Number(n)) || 0, 0), maxBalance);
     const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
     const isMonth = (v) => typeof v === 'string' && /^\d{4}-\d{2}$/.test(v);
     const isOldDefault = (Number(obj.version) || 0) < 3
@@ -219,18 +236,36 @@
       categories.push({ ...DEFAULT_CATEGORIES.find((c) => c.id === OTHER_ID) });
       seen.add(OTHER_ID);
     }
+    const accIds = new Set();
+    const accounts = [];
+    for (const a of Array.isArray(obj.accounts) ? obj.accounts : []) {
+      if (!a || typeof a.id !== 'string' || typeof a.name !== 'string' || accIds.has(a.id)) continue;
+      accIds.add(a.id);
+      accounts.push({
+        id: a.id, name: a.name.trim().slice(0, 12) || '（名前なし）',
+        openingBalance: balance0(a.openingBalance), openingDate: isDate(a.openingDate) ? a.openingDate : todayStr(),
+      });
+    }
     const payIds = new Set();
     const payments = [];
     for (const p of Array.isArray(obj.payments) ? obj.payments : []) {
       if (!p || typeof p.id !== 'string' || typeof p.name !== 'string' || payIds.has(p.id)) continue;
+      const kind = p.id === CASH_ID ? 'cash' : p.kind === 'card' ? 'card' : p.kind === 'bank' ? 'bank' : 'other';
+      if (kind === 'bank' && !accIds.has(p.accountId)) continue;   // 口座がなくなっていたら、この支払い方法も外す
       payIds.add(p.id);
-      const kind = p.id === CASH_ID ? 'cash' : p.kind === 'card' ? 'card' : 'other';
       // 色が入っていない（2.0.0 までの）支払い方法には、並び順で色を割りあてる
       const pay = { id: p.id, name: p.name.trim().slice(0, 12) || '（名前なし）', kind, color: clampColor(p.color, kind === 'cash' ? CASH_COLOR : (payments.length % 9) + 1) };
       if (kind === 'card') {
         pay.closingDay = clampDay(p.closingDay, CARD_DEFAULT.closingDay);
         pay.payOffset = Number(p.payOffset) === 2 ? 2 : 1;
         pay.payDay = clampDay(p.payDay, CARD_DEFAULT.payDay);
+        if (accIds.has(p.accountId)) pay.accountId = p.accountId;   // 引き落とされる口座
+      }
+      if (kind === 'bank') pay.accountId = p.accountId;
+      if (kind === 'other' && p.prepaid) {
+        pay.prepaid = true;
+        pay.openingBalance = balance0(p.openingBalance);
+        pay.openingDate = isDate(p.openingDate) ? p.openingDate : todayStr();
       }
       payments.push(pay);
     }
@@ -238,13 +273,8 @@
       payments.unshift({ ...DEFAULT_PAYMENTS[0] });
       payIds.add(CASH_ID);
     }
-    const accIds = new Set();
-    const accounts = [];
-    for (const a of Array.isArray(obj.accounts) ? obj.accounts : []) {
-      if (!a || typeof a.id !== 'string' || typeof a.name !== 'string' || accIds.has(a.id)) continue;
-      accIds.add(a.id);
-      accounts.push({ id: a.id, name: a.name.trim().slice(0, 12) || '（名前なし）' });
-    }
+    ensureBankPayments(accounts, payments);
+    for (const p of payments) payIds.add(p.id);
 
     const fixeds = [];
     const records = [];
@@ -286,6 +316,8 @@
         id: String(i.id || newId()), month: i.month,
         name: typeof i.name === 'string' && i.name.trim() ? i.name.trim().slice(0, 20) : '収入',
         amount: Math.min(amount, maxAmount),
+        accountId: accIds.has(i.accountId) ? i.accountId : '',
+        day: clampDay(i.day, 0),
       });
     }
     const budgets = {};
@@ -300,7 +332,6 @@
       }
     }
     const lineName = (v, fallback) => (typeof v.name === 'string' && v.name.trim() ? v.name.trim().slice(0, 20) : fallback);
-    const money0 = (n) => Math.min(Math.max(Math.round(Number(n)) || 0, 0), maxAmount);
     const varis = [];
     for (const v of Array.isArray(obj.varis) ? obj.varis : []) {
       if (!v || !isMonth(v.month)) continue;
@@ -321,12 +352,35 @@
     for (const month of Object.keys(mIn)) {
       if (isMonth(month) && typeof mIn[month] === 'string' && mIn[month].trim()) memos[month] = mIn[month].slice(0, 2000);
     }
+    // 口座の入金・出金・チャージ
+    const moves = [];
+    const fromTypes = ['account', 'card', 'cash', 'none'];
+    for (const m of Array.isArray(obj.moves) ? obj.moves : []) {
+      const amount = Math.round(Number(m && m.amount));
+      if (!m || !(amount > 0) || !isDate(m.date) || !MOVE_LABEL[m.type]) continue;
+      const mv = { id: String(m.id || newId()), date: m.date, type: m.type, amount: Math.min(amount, maxAmount), memo: typeof m.memo === 'string' ? m.memo.slice(0, 40) : '', createdAt: Number(m.createdAt) || 0 };
+      if (m.type === 'charge') {
+        const pay = payments.find((x) => x.id === m.payId && x.kind === 'other' && x.prepaid);
+        if (!pay) continue;
+        mv.payId = pay.id;
+        mv.fromType = fromTypes.includes(m.fromType) ? m.fromType : 'none';
+        mv.fromId = typeof m.fromId === 'string' ? m.fromId : '';
+        if (mv.fromType === 'account' && !accIds.has(mv.fromId)) mv.fromType = 'none';
+        if (mv.fromType === 'card' && !payments.some((x) => x.id === mv.fromId && x.kind === 'card')) mv.fromType = 'none';
+        if (mv.fromType === 'cash' || mv.fromType === 'none') mv.fromId = '';
+      } else {
+        if (!accIds.has(m.accountId)) continue;
+        mv.accountId = m.accountId;
+      }
+      moves.push(mv);
+    }
     const st = obj.settings || {};
     return {
       version: 3,
       categories,
       payments,
       accounts,
+      moves,
       records,
       incomes,
       fixeds,
@@ -386,6 +440,7 @@
     viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計で見ている月
     billMonth: calMonthOf(todayStr()),  // カードの引き落とし画面で見ている月
     sum: { range: 'month', cat: '', pay: '', by: 'cat' },  // 集計の画面の条件
+    acc: { filter: '' },   // 口座の画面の履歴で絞っている口座・電子マネー（'acc:ID' / 'pay:ID'・空＝すべて）
   };
 
   /* ---------- カテゴリ・支払い方法・集計の道具 ---------- */
@@ -463,8 +518,15 @@
     const prev = shiftMonth(key, -1);
     return monthOf(billInfo(p, prev).payDate) === key ? prev : key;
   }
+  // カードからのチャージ（電子マネーへ）は、支出ではないが引き落とし額には入る。表では記録と同じ形の「仮の記録」にする
+  function cardChargeRecords(p) {
+    return data.moves.filter((m) => m.type === 'charge' && m.fromType === 'card' && m.fromId === p.id).map((m) => ({
+      id: `mv${m.id}`, virtual: true, move: m, amount: m.amount, date: m.date, paymentId: p.id,
+      categoryId: OTHER_ID, memo: m.memo || `${payById(m.payId).name}へチャージ`, createdAt: m.createdAt,
+    }));
+  }
   function billRecords(p, billKey) {
-    return data.records.filter((r) => r.paymentId === p.id && billMonthOf(p, r.date) === billKey);
+    return [...data.records, ...cardChargeRecords(p)].filter((r) => r.paymentId === p.id && billMonthOf(p, r.date) === billKey);
   }
   // 今日より後で、いちばん近い引き落としの月
   function nextBillMonth(p) {
@@ -488,6 +550,7 @@
       const p = payById(r.paymentId);
       if (p.kind === 'card') consider(billMonthOf(p, r.date));
     }
+    for (const p of list) for (const r of cardChargeRecords(p)) consider(billMonthOf(p, r.date));
     return { min, max };
   }
   // カードごとの「次の1回」の引き落とし（日付の早い順）
@@ -498,6 +561,81 @@
       const total = sumAmount(billRecords(p, key));
       return { p, key, info, total, st: billStatus(info, total) };
     }).sort((a, b) => (a.info.payDate < b.info.payDate ? -1 : a.info.payDate > b.info.payDate ? 1 : 0));
+  }
+
+
+  /* ---------- 口座・電子マネーの残高 ---------- */
+  const accountOf = (id) => data.accounts.find((a) => a.id === id);
+  const prepaids = () => data.payments.filter((p) => p.kind === 'other' && p.prepaid);
+  const walletKey = (type, id) => `${type}:${id}`;
+
+  // 月初の固定費を引き落とす日（日付の指定がなければ、その月の最後の日）
+  function fixedDate(f) {
+    const { start, end } = periodOf(f.month);
+    if (!f.day) return end;
+    let d = dayOf(calMonthOf(end), f.day);
+    if (d < start || d > end) d = dayOf(calMonthOf(start), f.day);
+    return d >= start && d <= end ? d : end;
+  }
+
+  // 口座・電子マネーの出入りの一覧（基準日以降）。delta＝増えた(+)・減った(−)、auto＝自動で入る分、move＝手で入れた入出金
+  function walletEvents(type, id) {
+    const evs = [];
+    const add = (date, delta, label, extra) => evs.push({ date, delta, label, ...extra });
+    if (type === 'acc') {
+      const a = accountOf(id);
+      if (!a) return [];
+      for (const m of data.moves) {
+        if (m.type === 'deposit' && m.accountId === id) add(m.date, m.amount, m.memo || '入金', { move: m, createdAt: m.createdAt });
+        else if (m.type === 'withdraw' && m.accountId === id) add(m.date, -m.amount, m.memo || '出金', { move: m, createdAt: m.createdAt });
+        else if (m.type === 'charge' && m.fromType === 'account' && m.fromId === id) add(m.date, -m.amount, `${payById(m.payId).name}へチャージ`, { move: m, createdAt: m.createdAt });
+      }
+      for (const i of data.incomes) {
+        if (i.accountId === id) add(fixedDate(i), i.amount, `${i.name}（収入）`, { auto: true });
+      }
+      for (const f of data.fixeds) {
+        if (f.accountId === id) add(fixedDate(f), -f.amount, `${f.name}（口座引落）`, { auto: true });
+      }
+      const bankPay = data.payments.find((p) => p.kind === 'bank' && p.accountId === id);
+      if (bankPay) {
+        for (const r of data.records) {
+          if (r.paymentId === bankPay.id) add(r.date, -r.amount, `${catById(r.categoryId).name}${r.memo ? '：' + r.memo : ''}（支出）`, { auto: true, rec: r, createdAt: r.createdAt });
+        }
+      }
+      for (const p of cards()) {
+        if (p.accountId !== id) continue;
+        const keys = new Set([...data.records, ...cardChargeRecords(p)].filter((r) => r.paymentId === p.id).map((r) => billMonthOf(p, r.date)));
+        for (const k of keys) {
+          const total = sumAmount(billRecords(p, k));
+          if (total > 0) add(billInfo(p, k).payDate, -total, `${p.name}の引き落とし`, { auto: true });
+        }
+      }
+      return evs.filter((e) => e.date >= a.openingDate);
+    }
+    const p = payById(id);
+    if (!p || !p.prepaid) return [];
+    for (const m of data.moves) {
+      if (m.type === 'charge' && m.payId === id) add(m.date, m.amount, m.memo || `チャージ（${fromLabel(m)}）`, { move: m, createdAt: m.createdAt });
+    }
+    for (const r of data.records) {
+      if (r.paymentId === id) add(r.date, -r.amount, `${catById(r.categoryId).name}${r.memo ? '：' + r.memo : ''}（支出）`, { auto: true, rec: r, createdAt: r.createdAt });
+    }
+    return evs.filter((e) => e.date >= p.openingDate);
+  }
+  const walletOpening = (type, id) => (type === 'acc' ? accountOf(id).openingBalance : payById(id).openingBalance);
+  const walletName = (type, id) => (type === 'acc' ? accountOf(id).name : payById(id).name);
+
+  // 日付の順（同じ日は 入った順・手入力のものが先）
+  const byEventDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt || 0) - (b.createdAt || 0));
+  // 今日までの出入りを反映した残高
+  function walletBalance(type, id) {
+    return walletOpening(type, id) + walletEvents(type, id).filter((e) => e.date <= ui.today).reduce((sum, e) => sum + e.delta, 0);
+  }
+  // チャージ元の表示
+  function fromLabel(m) {
+    if (m.fromType === 'account') { const a = accountOf(m.fromId); return a ? `口座：${a.name}` : '口座'; }
+    if (m.fromType === 'card') return `カード：${payById(m.fromId).name}`;
+    return m.fromType === 'cash' ? '現金' : 'チャージ元なし';
   }
 
   /* ---------- 共通の部品：枠・表 ---------- */
@@ -560,10 +698,10 @@
   // 支出の記録の表（支出・カードの画面で共通）。行を押すと直せる
   function recordTable(recs, opt = {}) {
     const rows = recs.map((r) => {
-      const c = catById(r.categoryId);
+      const c = r.virtual ? { icon: '🔌', name: 'チャージ' } : catById(r.categoryId);
       const p = payById(r.paymentId);
       return {
-        onClick: () => openRecordSheet(r, false),
+        onClick: () => (r.virtual ? openMoveSheet(r.move) : openRecordSheet(r, false)),
         cells: [
           { v: fmtDate(r.date), cls: 't-date' },
           { v: h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name) },
@@ -634,7 +772,7 @@
     const addIncome = () => openIncomeSheet(null);
     const incomePanel = panel('今月の収入', linkBtn('＋ 追加', addIncome),
       table([{ t: '内容' }, { t: '金額', num: true }],
-        padRows(incomes.map((i) => ({ onClick: () => openIncomeSheet(i), cells: [{ v: i.name }, { num: true, v: yen(i.amount) }] })), 4, 2, addIncome),
+        padRows(incomes.map((i) => ({ onClick: () => openIncomeSheet(i), cells: [{ v: h('span', null, i.name, i.accountId && accountById(i.accountId) ? h('span', { class: 'tag' }, `入金：${accountById(i.accountId).name}`) : null) }, { num: true, v: yen(i.amount) }] })), 4, 2, addIncome),
         [{ v: mark('合計', 'ⓐ') }, { num: true, v: yen(A) }]));
 
     // ---- クレジットカードのひかえ（使った月ごと。引き落としは翌月以降の「カード支払い」へ）
@@ -860,7 +998,7 @@
     const nowInc = incomesOf(key);
     const nowFix = fixedsOf(key);
     const nowVari = variOf(key);
-    const incs = incomesOf(prev).filter((i) => !nowInc.some((x) => x.name === i.name && x.amount === i.amount));
+    const incs = incomesOf(prev).filter((i) => !nowInc.some((x) => x.name === i.name && x.amount === i.amount && x.accountId === i.accountId));
     const fixes = fixedsOf(prev).filter((f) => !nowFix.some((x) => x.name === f.name && x.amount === f.amount && x.accountId === f.accountId));
     const varis = variOf(prev).filter((v) => !nowVari.some((x) => x.name === v.name));
     const prevB = budgetsOf(prev);
@@ -876,7 +1014,7 @@
       okLabel: 'コピーする',
     });
     if (!ok) return;
-    const newIncs = incs.map((i) => ({ id: newId(), month: key, name: i.name, amount: i.amount }));
+    const newIncs = incs.map((i) => ({ id: newId(), month: key, name: i.name, amount: i.amount, accountId: i.accountId || '', day: i.day || 0 }));
     const newFix = fixes.map((f) => ({ id: newId(), month: key, name: f.name, amount: f.amount, accountId: f.accountId, day: f.day }));
     const newVari = varis.map((v) => ({ id: newId(), month: key, name: v.name, day: v.day, budget: v.budget, actual: 0 }));
     data.incomes.push(...newIncs);
@@ -1213,8 +1351,210 @@
         : emptyNote('この期間のご利用はありません'));
   }
 
+  /* ---------- 口座（残高・入金・出金・チャージ） ---------- */
+  function renderAccounts() {
+    const body = $('#accounts-body');
+    const key = ui.viewMonth;
+    const { start, end } = periodOf(key);
+    const inMonth = (e) => e.date >= start && e.date <= end;
+    const flow = (evs) => {
+      let inn = 0;
+      let out = 0;
+      for (const e of evs.filter(inMonth)) { if (e.delta > 0) inn += e.delta; else out -= e.delta; }
+      return { inn, out };
+    };
+    const actBtn = (label, fn) => h('button', { type: 'button', class: 'chip-btn', onclick: (e) => { e.stopPropagation(); fn(); } }, label);
+    const pick = (id) => () => { ui.acc.filter = ui.acc.filter === id ? '' : id; renderAccounts(); };
+    const neg = (n) => (n < 0 ? 'neg' : '');
+
+    // ---- 銀行口座
+    const accRows = data.accounts.map((a) => {
+      const id = walletKey('acc', a.id);
+      const bal = walletBalance('acc', a.id);
+      const { inn, out } = flow(walletEvents('acc', a.id));
+      return {
+        cls: ui.acc.filter === id ? 'is-current' : '', onClick: pick(id),
+        cells: [
+          { v: a.name },
+          { num: true, cls: neg(bal), v: signedMoney(bal) },
+          { num: true, v: inn ? money(inn) : '' },
+          { num: true, v: out ? money(out) : '' },
+          { v: h('span', { class: 'row-actions' },
+            actBtn('入金', () => openMoveSheet(null, { type: 'deposit', accountId: a.id })),
+            actBtn('出金', () => openMoveSheet(null, { type: 'withdraw', accountId: a.id }))) },
+        ],
+      };
+    });
+    const accTotal = data.accounts.reduce((sum, a) => sum + walletBalance('acc', a.id), 0);
+    const accPanel = panel('銀行口座', linkBtn('＋ 口座を追加', () => openAccountSheet(null)),
+      data.accounts.length
+        ? table([{ t: '口座' }, { t: '今日の残高', num: true }, { t: `${monthName(key)}の入金`, num: true }, { t: `${monthName(key)}の出金`, num: true }, { t: '' }], accRows,
+          [{ v: '残高の合計' }, { num: true, v: signedMoney(accTotal) }, { v: '', span: 3 }])
+        : emptyNote('銀行口座がまだ登録されていません。', '登録すると、入金・出金を記録して残高がわかります。固定費の口座引落・カードの引き落とし・口座払いの支出も、自動で残高から引かれます。',
+          h('button', { type: 'button', class: 'btn btn-primary btn-inline', onclick: () => openAccountSheet(null) }, icon('plus', 'icon-s'), '口座を登録する')));
+
+    // ---- 電子マネー（チャージして使うタイプ）
+    const ppList = prepaids();
+    const ppRows = ppList.map((p) => {
+      const id = walletKey('pay', p.id);
+      const bal = walletBalance('pay', p.id);
+      const { inn, out } = flow(walletEvents('pay', p.id));
+      return {
+        cls: ui.acc.filter === id ? 'is-current' : '', onClick: pick(id),
+        cells: [
+          { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name) },
+          { num: true, cls: neg(bal), v: signedMoney(bal) },
+          { num: true, v: inn ? money(inn) : '' },
+          { num: true, v: out ? money(out) : '' },
+          { v: h('span', { class: 'row-actions' }, actBtn('チャージ', () => openMoveSheet(null, { type: 'charge', payId: p.id }))) },
+        ],
+      };
+    });
+    const ppPanel = panel('電子マネー（チャージして使うタイプ）', linkBtn('＋ 電子マネーを追加', () => openPaymentSheet(null, { kind: 'other', prepaid: true })),
+      ppList.length
+        ? table([{ t: '電子マネー' }, { t: '今日の残高', num: true }, { t: `${monthName(key)}のチャージ`, num: true }, { t: `${monthName(key)}の使用`, num: true }, { t: '' }], ppRows)
+        : emptyNote('チャージして使う電子マネー（Suica・WAON・nanaco・PayPay など）がまだありません。',
+          '追加すると、チャージ（入金）を記録して残高がわかり、「支出」で支払い方法に選ぶと残高が減ります。後払いのタイプは、設定の支払い方法のままで使えます。'));
+
+    // ---- 入出金の履歴（見ている月）
+    const wallets = [
+      ...data.accounts.map((a) => ({ type: 'acc', id: a.id, key: walletKey('acc', a.id), name: a.name })),
+      ...ppList.map((p) => ({ type: 'pay', id: p.id, key: walletKey('pay', p.id), name: p.name })),
+    ];
+    if (ui.acc.filter && !wallets.some((w) => w.key === ui.acc.filter)) ui.acc.filter = '';
+    const filterSel = selectEl([['', 'すべて'], ...wallets.map((w) => [w.key, w.name])], ui.acc.filter, '口座・電子マネーで絞る');
+    filterSel.addEventListener('change', () => { ui.acc.filter = filterSel.value; renderAccounts(); });
+    const shown = wallets.filter((w) => !ui.acc.filter || w.key === ui.acc.filter);
+    const single = ui.acc.filter !== '';
+    const lines = [];
+    for (const w of shown) {
+      const evs = walletEvents(w.type, w.id).sort(byEventDate);
+      let bal = walletOpening(w.type, w.id);
+      for (const e of evs) {
+        bal += e.delta;
+        if (inMonth(e)) lines.push({ ...e, wallet: w.name, bal });
+      }
+    }
+    lines.sort(byEventDate);
+    const histRows = lines.map((e) => ({
+      cls: e.date > ui.today ? 'row-future' : '',
+      onClick: e.move ? () => openMoveSheet(e.move) : e.rec ? () => openRecordSheet(e.rec, false) : null,
+      cells: [
+        { v: fmtDate(e.date), cls: 't-date' },
+        { v: e.wallet },
+        { v: h('span', null, e.label, e.auto ? h('span', { class: 'tag' }, '自動') : null, e.date > ui.today ? h('span', { class: 'tag' }, '予定') : null) },
+        { num: true, v: e.delta > 0 ? money(e.delta) : '' },
+        { num: true, v: e.delta < 0 ? money(-e.delta) : '' },
+        single && { num: true, cls: neg(e.bal), v: signedMoney(e.bal) },
+      ].filter(Boolean),
+    }));
+    const inTotal = lines.reduce((sum, e) => sum + Math.max(e.delta, 0), 0);
+    const outTotal = lines.reduce((sum, e) => sum + Math.max(-e.delta, 0), 0);
+    const histHead = [{ t: '日付' }, { t: '口座・電子マネー' }, { t: '内容' }, { t: '入金', num: true }, { t: '出金', num: true }, single && { t: '残高', num: true }].filter(Boolean);
+    const addBtn = wallets.length ? linkBtn('＋ 入出金を追加', () => openMoveSheet(null, {
+      type: single && shown[0].type === 'pay' ? 'charge' : 'deposit',
+      accountId: single && shown[0].type === 'acc' ? shown[0].id : '', payId: single && shown[0].type === 'pay' ? shown[0].id : '',
+    })) : null;
+    const histPanel = panel(`${fmtMonth(key)}の入出金の履歴`, [filterSel, addBtn],
+      histRows.length
+        ? table(histHead, histRows, [{ v: `${histRows.length}件`, span: 3 }, { num: true, v: money(inTotal) }, { num: true, v: money(outTotal) }, single && { v: '' }].filter(Boolean))
+        : emptyNote(wallets.length ? 'この月の入出金はありません' : '口座や電子マネーを登録すると、ここに入出金の履歴が出ます'),
+      h('p', { class: 'note note-pad' }, '「自動」の行は、月初の口座引落の固定費・カードの引き落とし・口座払いや電子マネーの支出から自動で入ります（行を押して直せるのは、手で入れた入出金と支出です）。日付が今日より先のものは「予定」で、今日の残高には入りません。'));
+
+    body.replaceChildren(h('div', { class: 'grid-2' }, accPanel, ppPanel), histPanel);
+  }
+
+  // 口座の入金・出金、電子マネーへのチャージを追加・直す
+  function openMoveSheet(mv, preset = {}) {
+    const isNew = !mv;
+    const firstAcc = data.accounts[0] ? data.accounts[0].id : '';
+    const firstPre = prepaids()[0] ? prepaids()[0].id : '';
+    const draft = isNew
+      ? { type: preset.type || (data.accounts.length ? 'deposit' : 'charge'), accountId: preset.accountId || firstAcc, payId: preset.payId || firstPre, fromType: 'account', fromId: preset.accountId || firstAcc }
+      : { ...mv, accountId: mv.accountId || firstAcc, payId: mv.payId || firstPre };
+
+    const dateInput = h('input', { class: 'field-input', type: 'date', 'aria-label': '日付' });
+    dateInput.value = isNew ? ui.today : mv.date;
+    const amount = amountField(isNew ? 0 : mv.amount);
+    const accSel = selectEl(data.accounts.map((a) => [a.id, a.name]), draft.accountId, '口座');
+    const paySel = selectEl(prepaids().map((p) => [p.id, p.name]), draft.payId, '電子マネー');
+    const fromOptions = [
+      ...data.accounts.map((a) => [`account:${a.id}`, `銀行口座：${a.name}`]),
+      ...cards().map((p) => [`card:${p.id}`, `クレジットカード：${p.name}`]),
+      ['cash:', '現金'], ['none:', 'チャージ元なし（ポイント・もらった分など）'],
+    ];
+    const fromSel = selectEl(fromOptions, `${draft.fromType}:${draft.fromId || ''}`, 'チャージ元');
+    if (fromSel.value !== `${draft.fromType}:${draft.fromId || ''}`) fromSel.value = fromOptions[0][0];
+    const memoInput = h('input', { class: 'field-input', type: 'text', maxlength: '40', placeholder: 'なくてもOK（例：給料・ATM）', 'aria-label': 'メモ' });
+    memoInput.value = isNew ? '' : mv.memo;
+
+    const typeBox = h('div', { class: 'seg', role: 'group', 'aria-label': '種類' });
+    const accField = h('div', null, field('口座', accSel));
+    const chargeFields = h('div', null, field('チャージする電子マネー', paySel), field('チャージ元', fromSel));
+    const note = h('p', { class: 'note' });
+    const draw = () => {
+      const types = [['deposit', '入金（口座へ）', data.accounts.length > 0], ['withdraw', '出金（口座から）', data.accounts.length > 0], ['charge', '電子マネーへチャージ', prepaids().length > 0]];
+      typeBox.replaceChildren(...types.map(([t, label, ok]) => h('button', {
+        type: 'button', class: 'pay-btn', disabled: !ok, 'aria-pressed': String(draft.type === t),
+        onclick: () => { draft.type = t; draw(); },
+      }, label)));
+      accField.hidden = draft.type === 'charge';
+      chargeFields.hidden = draft.type !== 'charge';
+      note.textContent = draft.type === 'deposit' ? '給料の振り込みなど、口座にお金が入ったときに記録します。'
+        : draft.type === 'withdraw' ? 'ATMでの引き出しや振り込みなど、口座からお金が出たときに記録します。手元の現金は管理していません。'
+          : '電子マネーの残高が増えます。チャージ元を銀行口座にすると、その口座の残高から引かれます。クレジットカードにすると、カードの引き落とし額に入ります（支出にはなりません）。';
+    };
+    draw();
+
+    const saveBtn = h('button', {
+      type: 'button', class: 'btn btn-primary',
+      onclick: () => {
+        const value = amount.get();
+        if (!value) { amount.input.focus(); showToast('金額を入力してください'); return; }
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : (isNew ? ui.today : mv.date);
+        const out = { id: isNew ? newId() : mv.id, date, type: draft.type, amount: value, memo: memoInput.value.trim().slice(0, 40), createdAt: isNew ? Date.now() : mv.createdAt };
+        if (draft.type === 'charge') {
+          if (!paySel.value) { showToast('チャージする電子マネーを選んでください'); return; }
+          const [fromType, ...rest] = fromSel.value.split(':');
+          Object.assign(out, { payId: paySel.value, fromType, fromId: rest.join(':') });
+        } else {
+          if (!accSel.value) { showToast('口座を選んでください'); return; }
+          out.accountId = accSel.value;
+        }
+        if (isNew) data.moves.push(out);
+        else data.moves[data.moves.findIndex((m) => m.id === mv.id)] = out;
+        save();
+        closeSheet();
+        renderAll();
+        showToast(isNew ? `${MOVE_LABEL[out.type]}を記録しました` : `${MOVE_LABEL[out.type]}を直しました`);
+      },
+    }, isNew ? '追加' : '保存');
+    const footer = [saveBtn];
+    if (!isNew) {
+      footer.unshift(h('button', {
+        type: 'button', class: 'btn btn-danger',
+        onclick: async () => {
+          const ok = await confirmDialog({ title: `この${MOVE_LABEL[mv.type]}を削除しますか？`, message: `${fmtDate(mv.date)}　${yen(mv.amount)}円${mv.memo ? '　' + mv.memo : ''}`, okLabel: '削除する', danger: true });
+          if (!ok) return;
+          data.moves = data.moves.filter((m) => m.id !== mv.id);
+          save();
+          closeSheet();
+          renderAll();
+          showToast('削除しました');
+        },
+      }, '削除'));
+    }
+    openSheet(isNew ? '入金・出金・チャージを追加' : '入金・出金・チャージを直す', [
+      field('種類', typeBox),
+      h('div', { class: 'field-row' }, field('日付', dateInput), field('金額', amount.el)),
+      accField, chargeFields,
+      field('メモ', memoInput),
+      note,
+    ], footer);
+  }
+
   /* ---------- 表示する月の切りかえ ---------- */
-  const MONTH_TABS = ['start', 'spend', 'summary'];
+  const MONTH_TABS = ['start', 'spend', 'summary', 'accounts'];
 
   function renderMonthNav() {
     const key = ui.viewMonth;
@@ -1246,21 +1586,33 @@
       moveButtons(list, i, c.name))));
 
     $('#pay-setting-list').replaceChildren(...data.payments.map((p, i, list) => h('li', { class: 'cat-row' },
-      h('button', { type: 'button', class: 'cat-row-main', onclick: () => openPaymentSheet(p) },
+      h('button', { type: 'button', class: 'cat-row-main', onclick: () => (p.kind === 'bank' ? openAccountSheet(accountOf(p.accountId)) : openPaymentSheet(p)) },
         dot(p.color),
         h('span', { class: 'cat-row-name' }, p.name,
-          h('span', { class: 'cat-row-sub' }, p.kind === 'card' ? payRule(p) : p.kind === 'cash' ? '手元のお金' : '電子マネー・口座振替など（締め日なし）')),
-        h('span', { class: `badge${p.kind === 'card' ? ' badge-card' : ''}` }, PAY_KIND_LABEL[p.kind])),
+          h('span', { class: 'cat-row-sub' }, paySub(p))),
+        h('span', { class: `badge${p.kind === 'card' ? ' badge-card' : ''}` }, p.prepaid ? 'チャージ式' : PAY_KIND_LABEL[p.kind])),
       moveButtons(list, i, p.name))));
 
     $('#account-list').replaceChildren(...(data.accounts.length
       ? data.accounts.map((a, i, list) => h('li', { class: 'cat-row' },
-        h('button', { type: 'button', class: 'cat-row-main', onclick: () => openAccountSheet(a) }, h('span', { class: 'cat-row-name' }, a.name)),
+        h('button', { type: 'button', class: 'cat-row-main', onclick: () => openAccountSheet(a) },
+          h('span', { class: 'cat-row-name' }, a.name, h('span', { class: 'cat-row-sub' }, `残高 ${signedMoney(walletBalance('acc', a.id))}`))),
         moveButtons(list, i, a.name)))
       : [h('li', { class: 'empty-s' }, 'まだ口座がありません')]));
 
     const last = data.settings.lastBackup;
     $('#last-backup').textContent = last ? `最後のバックアップ：${fmtFullDate(last)}` : 'まだバックアップしていません';
+  }
+
+  function paySub(p) {
+    if (p.kind === 'card') {
+      const acc = p.accountId && accountOf(p.accountId);
+      return payRule(p) + (acc ? `　引き落とし口座：${acc.name}` : '');
+    }
+    if (p.kind === 'cash') return '手元のお金';
+    if (p.kind === 'bank') return `口座払い（デビットなど）　残高 ${signedMoney(walletBalance('acc', p.accountId))}`;
+    if (p.prepaid) return `チャージして使う電子マネー　残高 ${signedMoney(walletBalance('pay', p.id))}`;
+    return '電子マネー・口座振替など（残高は管理しない）';
   }
 
   // 並べかえの「上へ」「下へ」ボタン
@@ -1345,9 +1697,9 @@
   }
 
   // 金額の入力欄（数字以外は自動で取りのぞき、3けたごとに区切る）。金額を読み取る関数を返す
-  function attachAmountFormat(input) {
+  function attachAmountFormat(input, maxDigits = MAX_DIGITS) {
     const format = () => {
-      const digits = toHalfDigits(input.value).replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, MAX_DIGITS);
+      const digits = toHalfDigits(input.value).replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, maxDigits);
       input.value = digits ? yen(Number(digits)) : '';
     };
     input.addEventListener('input', (e) => { if (!e.isComposing) format(); });
@@ -1355,13 +1707,13 @@
     return () => Number(input.value.replace(/[^0-9]/g, '')) || 0;
   }
 
-  function amountField(initial) {
+  function amountField(initial, maxDigits = MAX_DIGITS) {
     const input = h('input', {
       class: 'field-input', type: 'text', inputmode: 'numeric', autocomplete: 'off',
       'aria-label': '金額', placeholder: '0',
     });
     input.value = initial > 0 ? yen(initial) : '';
-    return { el: h('div', { class: 'field-amount' }, input), input, get: attachAmountFormat(input) };
+    return { el: h('div', { class: 'field-amount' }, input), input, get: attachAmountFormat(input, maxDigits) };
   }
 
   // 色を選ぶ欄（12色）
@@ -1483,11 +1835,14 @@
     ], footer);
   }
 
-  // 口座引落の口座を追加・直す
+  // 銀行口座を追加・直す（月初の口座引落の分け方にも使う）
   function openAccountSheet(acc) {
     const isNew = !acc;
     const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '12', placeholder: '例：JA', 'aria-label': '口座の名前' });
     nameInput.value = isNew ? '' : acc.name;
+    const balance = amountField(isNew ? 0 : acc.openingBalance, BALANCE_DIGITS);
+    const dateInput = h('input', { class: 'field-input', type: 'date', 'aria-label': '残高の基準日' });
+    dateInput.value = isNew ? ui.today : acc.openingDate;
     const footer = [
       h('button', {
         type: 'button', class: 'btn btn-primary',
@@ -1495,8 +1850,10 @@
           const name = nameInput.value.trim();
           if (!name) { nameInput.focus(); showToast('名前を入力してください'); return; }
           if (data.accounts.some((a) => a.name === name && (isNew || a.id !== acc.id))) { nameInput.focus(); showToast('同じ名前の口座があります'); return; }
-          if (isNew) data.accounts.push({ id: `a${newId()}`, name });
-          else acc.name = name;
+          const openingDate = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : ui.today;
+          if (isNew) data.accounts.push({ id: `a${newId()}`, name, openingBalance: balance.get(), openingDate });
+          else Object.assign(acc, { name, openingBalance: balance.get(), openingDate });
+          ensureBankPayments(data.accounts, data.payments);
           save();
           closeSheet();
           renderAll();
@@ -1508,14 +1865,26 @@
       footer.unshift(h('button', {
         type: 'button', class: 'btn btn-danger',
         onclick: async () => {
-          const count = data.fixeds.filter((x) => x.accountId === acc.id).length;
-          const ok = await confirmDialog({
-            title: `「${acc.name}」を削除しますか？`,
-            message: count > 0 ? `この口座の固定費 ${count}件は「現金支出（固定）」に移ります。` : '',
-            okLabel: '削除する', danger: true,
-          });
+          const bankPay = data.payments.find((p) => p.kind === 'bank' && p.accountId === acc.id);
+          const fixedCount = data.fixeds.filter((x) => x.accountId === acc.id).length;
+          const recCount = bankPay ? data.records.filter((r) => r.paymentId === bankPay.id).length : 0;
+          const moveCount = data.moves.filter((m) => m.accountId === acc.id).length;
+          const notes = [];
+          if (fixedCount) notes.push(`この口座の固定費 ${fixedCount}件は「現金支出（固定）」に移ります。`);
+          if (recCount) notes.push(`口座払いの支出 ${recCount}件は「現金」に移ります。`);
+          if (moveCount) notes.push(`この口座の入金・出金の記録 ${moveCount}件は削除されます。`);
+          const ok = await confirmDialog({ title: `「${acc.name}」を削除しますか？`, message: notes.join('\n'), okLabel: '削除する', danger: true });
           if (!ok) return;
           data.fixeds.forEach((x) => { if (x.accountId === acc.id) x.accountId = ''; });
+          data.incomes.forEach((x) => { if (x.accountId === acc.id) x.accountId = ''; });
+          if (bankPay) {
+            data.records.forEach((r) => { if (r.paymentId === bankPay.id) r.paymentId = CASH_ID; });
+            data.payments = data.payments.filter((p) => p.id !== bankPay.id);
+            if (ui.paymentId === bankPay.id) ui.paymentId = CASH_ID;
+          }
+          data.payments.forEach((p) => { if (p.accountId === acc.id) delete p.accountId; });
+          data.moves = data.moves.filter((m) => m.accountId !== acc.id);
+          data.moves.forEach((m) => { if (m.fromType === 'account' && m.fromId === acc.id) { m.fromType = 'none'; m.fromId = ''; } });
           data.accounts = data.accounts.filter((a) => a.id !== acc.id);
           save();
           closeSheet();
@@ -1524,7 +1893,12 @@
         },
       }, '削除'));
     }
-    openSheet(isNew ? '口座を追加' : '口座を直す', [field('口座の名前', nameInput)], footer);
+    openSheet(isNew ? '口座を追加' : '口座を直す', [
+      field('口座の名前', nameInput),
+      h('div', { class: 'field-row' }, field('残高（基準日の始まり）', balance.el), field('基準日', dateInput)),
+      h('p', { class: 'note' }, '基準日から後の入金・出金・チャージ、月初の口座引落の固定費、この口座から引き落とすカードの支払い、口座払いの支出が、自動で残高に反映されます。基準日より前の分は残高に入れないので、登録した日と、その日の始まりの残高を入れてください。'),
+      h('p', { class: 'note' }, '口座を登録すると、「支出」の支払い方法に「口座名（口座）」が自動で増えます（デビットカード・口座払い用）。'),
+    ], footer);
   }
 
   // 収入（給料など）を追加・直す
@@ -1534,6 +1908,8 @@
     const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：給料', 'aria-label': '項目' });
     nameInput.value = isNew ? '' : inc.name;
     const amount = amountField(isNew ? 0 : inc.amount);
+    const accSel = selectEl([['', '口座に入れない（現金など）'], ...data.accounts.map((a) => [a.id, a.name])], isNew ? '' : (inc.accountId || ''), '入金される口座');
+    const daySel = dayOrNoneSelect(isNew ? 0 : (inc.day || 0));
 
     const footer = [
       h('button', {
@@ -1543,8 +1919,9 @@
           const value = amount.get();
           if (!name) { nameInput.focus(); showToast('項目を入力してください'); return; }
           if (!value) { amount.input.focus(); showToast('金額を入力してください'); return; }
-          if (isNew) data.incomes.push({ id: newId(), month: key, name, amount: value });
-          else Object.assign(inc, { name, amount: value });
+          const extra = { accountId: accSel.value, day: Number(daySel.value) };
+          if (isNew) data.incomes.push({ id: newId(), month: key, name, amount: value, ...extra });
+          else Object.assign(inc, { name, amount: value, ...extra });
           save();
           closeSheet();
           renderAll();
@@ -1566,7 +1943,11 @@
         },
       }, '削除'));
     }
-    openSheet(isNew ? `${fmtMonth(key)}の収入を追加` : '収入を直す', [field('項目', nameInput), field('金額', amount.el)], footer);
+    openSheet(isNew ? `${fmtMonth(key)}の収入を追加` : '収入を直す', [
+      field('項目', nameInput), field('金額', amount.el),
+      h('div', { class: 'field-row' }, field('入金される口座', accSel), field('入金日', daySel)),
+      h('p', { class: 'note' }, '口座を選ぶと、入金日（指定なしならその月の最後の日）に、「口座」タブの残高へ自動で入ります。'),
+    ], footer);
   }
 
   function unusedColor(list) {
@@ -1661,12 +2042,14 @@
     return sel;
   }
 
-  function openPaymentSheet(pay) {
+  function openPaymentSheet(pay, preset) {
     const isNew = !pay;
     const isCash = !isNew && pay.id === CASH_ID;
-    const draft = isNew ? { name: '', kind: 'card', color: unusedColor(data.payments), ...CARD_DEFAULT } : { ...CARD_DEFAULT, ...pay };
+    const draft = isNew
+      ? { name: '', kind: 'card', color: unusedColor(data.payments), ...CARD_DEFAULT, prepaid: false, openingBalance: 0, openingDate: ui.today, accountId: '', ...preset }
+      : { ...CARD_DEFAULT, prepaid: false, openingBalance: 0, openingDate: ui.today, accountId: '', ...pay };
 
-    const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '12', placeholder: '例：楽天カード', 'aria-label': '名前' });
+    const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '12', placeholder: draft.kind === 'card' ? '例：楽天カード' : '例：Suica', 'aria-label': '名前' });
     nameInput.value = draft.name;
     const kindBox = h('div', { class: 'seg', role: 'group', 'aria-label': '種類' });
     const closingSel = daySelect(draft.closingDay, '締め日');
@@ -1674,11 +2057,26 @@
       h('option', { value: '1' }, '翌月'), h('option', { value: '2' }, '翌々月'));
     offsetSel.value = String(draft.payOffset);
     const payDaySel = daySelect(draft.payDay, '引き落とし日');
+    const cardAccSel = selectEl([['', '指定しない'], ...data.accounts.map((a) => [a.id, a.name])], draft.accountId || '', '引き落とされる口座');
     const example = h('p', { class: 'note' });
     const cardFields = h('div', null,
       field('締め日', h('div', { class: 'inline-fields' }, '毎月', closingSel, 'に締め')),
       field('支払日（口座から引き落とされる日）', h('div', { class: 'inline-fields' }, offsetSel, 'の', payDaySel, 'に引き落とし')),
+      field('引き落とされる口座（登録した口座の残高から、支払日に自動で引きます）', cardAccSel),
       example);
+
+    const prepaidBox = h('input', { type: 'checkbox', id: 'prepaid-check' });
+    prepaidBox.checked = !!draft.prepaid;
+    const balance = amountField(draft.openingBalance, BALANCE_DIGITS);
+    const baseDate = h('input', { class: 'field-input', type: 'date', 'aria-label': '残高の基準日' });
+    baseDate.value = draft.openingDate;
+    const prepaidFields = h('div', null,
+      h('div', { class: 'field-row' }, field('今の残高', balance.el), field('基準日（その日の始まりの残高）', baseDate)),
+      h('p', { class: 'note' }, 'チャージ（入金）は「口座」タブで記録します。「支出」でこの電子マネーを支払い方法に選ぶと、残高が減ります。'));
+    const otherFields = h('div', null,
+      h('label', { class: 'check-row', for: 'prepaid-check' }, prepaidBox, 'チャージして使うタイプ（残高を管理する）'),
+      prepaidFields,
+      h('p', { class: 'note' }, 'チェックを入れないと、締め日のない支払い方法（後払いの電子マネー・口座振替など）として、残高は管理しません。'));
 
     const draw = () => {
       draft.closingDay = Number(closingSel.value);
@@ -1689,14 +2087,17 @@
         onclick: () => { draft.kind = k; draw(); },
       }, label)));
       cardFields.hidden = draft.kind !== 'card';
+      otherFields.hidden = draft.kind !== 'other';
+      prepaidFields.hidden = !prepaidBox.checked;
       const info = billInfo(draft, billMonthOf(draft, ui.today));
       example.textContent = `例：今日（${fmtDate(ui.today)}）使った分は、${fmtDate(info.start)}〜${fmtDate(info.end)}のご利用分として、${fmtFullDate(info.payDate)}に引き落とされます。`;
     };
     [closingSel, offsetSel, payDaySel].forEach((el) => el.addEventListener('change', draw));
+    prepaidBox.addEventListener('change', draw);
     draw();
 
     const body = [field('名前', nameInput)];
-    if (!isCash) body.push(field('種類', kindBox), cardFields);
+    if (!isCash) body.push(field('種類', kindBox), cardFields, otherFields);
     body.push(field('色（グラフや一覧で使います）', swatchPicker(() => draft.color, (n) => { draft.color = n; })));
     if (isCash) body.push(h('p', { class: 'note' }, '「現金」は削除できません（ほかの支払い方法を削除したときの記録の移し先になります）。'));
 
@@ -1708,16 +2109,30 @@
         if (data.payments.some((p) => p.name === name && (isNew || p.id !== pay.id))) {
           nameInput.focus(); showToast('同じ名前の支払い方法があります'); return;
         }
+        if (!isNew && pay.prepaid && !(draft.kind === 'other' && prepaidBox.checked) && data.moves.some((m) => m.payId === pay.id)) {
+          showToast('チャージの記録があるため、「チャージして使うタイプ」は外せません。先にチャージの記録を消してください'); return;
+        }
         const values = { name, color: draft.color };
         if (!isCash) {
           values.kind = draft.kind;
-          if (draft.kind === 'card') Object.assign(values, { closingDay: draft.closingDay, payOffset: draft.payOffset, payDay: draft.payDay });
+          if (draft.kind === 'card') {
+            Object.assign(values, { closingDay: draft.closingDay, payOffset: draft.payOffset, payDay: draft.payDay });
+            if (cardAccSel.value) values.accountId = cardAccSel.value;
+          }
+          if (draft.kind === 'other' && prepaidBox.checked) {
+            const date = /^\d{4}-\d{2}-\d{2}$/.test(baseDate.value) ? baseDate.value : ui.today;
+            Object.assign(values, { prepaid: true, openingBalance: balance.get(), openingDate: date });
+          }
         }
         if (isNew) {
           data.payments.push({ id: `p${newId()}`, ...values });
         } else {
           Object.assign(pay, values);
-          if (pay.kind !== 'card') { delete pay.closingDay; delete pay.payOffset; delete pay.payDay; }
+          if (pay.kind !== 'card') {
+            delete pay.closingDay; delete pay.payOffset; delete pay.payDay; delete pay.accountId;
+            data.moves.forEach((m) => { if (m.fromType === 'card' && m.fromId === pay.id) { m.fromType = 'none'; m.fromId = ''; } });
+          } else if (!values.accountId) delete pay.accountId;
+          if (!values.prepaid) { delete pay.prepaid; delete pay.openingBalance; delete pay.openingDate; }
         }
         save();
         closeSheet();
@@ -1732,14 +2147,16 @@
         type: 'button', class: 'btn btn-danger',
         onclick: async () => {
           const count = data.records.filter((r) => r.paymentId === pay.id).length;
+          const moveCount = data.moves.filter((m) => m.payId === pay.id).length;
           const cash = payById(CASH_ID);
-          const ok = await confirmDialog({
-            title: `「${pay.name}」を削除しますか？`,
-            message: count > 0 ? `この支払い方法の記録 ${count}件は「${cash.name}」に移ります。` : '',
-            okLabel: '削除する', danger: true,
-          });
+          const notes = [];
+          if (count > 0) notes.push(`この支払い方法の記録 ${count}件は「${cash.name}」に移ります。`);
+          if (moveCount > 0) notes.push(`チャージの記録 ${moveCount}件は削除されます。`);
+          const ok = await confirmDialog({ title: `「${pay.name}」を削除しますか？`, message: notes.join('\n'), okLabel: '削除する', danger: true });
           if (!ok) return;
           data.records.forEach((r) => { if (r.paymentId === pay.id) r.paymentId = CASH_ID; });
+          data.moves = data.moves.filter((m) => m.payId !== pay.id);
+          data.moves.forEach((m) => { if (m.fromType === 'card' && m.fromId === pay.id) { m.fromType = 'none'; m.fromId = ''; } });
           data.payments = data.payments.filter((p) => p.id !== pay.id);
           if (ui.paymentId === pay.id) ui.paymentId = CASH_ID;
           save();
@@ -1873,6 +2290,7 @@
     renderStart();
     renderSpend();
     renderCards();
+    renderAccounts();
     renderSummary();
     renderSettings();
     renderMonthNav();
@@ -1963,6 +2381,7 @@
     // Windows のライト／ダークを切りかえたとき、上の帯の色も合わせる
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyStatusBarColor);
 
+    if (data.accounts.length) save();   // 基準日をはじめて決めた口座を、その日のまま残すため
     applyTheme();
     registerServiceWorker();
     renderAll();

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>かんたん家計簿</title>
-  <meta name="description" content="月初・支出・集計・クレジットのタブで使える、手書きの家計簿に似た、ログイン不要の家計簿">
+  <meta name="description" content="月初・支出・集計・クレジット・口座のタブで使える、手書きの家計簿に似た、ログイン不要の家計簿">
   <!-- 明るい画面・暗い画面の両方に対応していることをブラウザに伝える -->
   <meta name="color-scheme" content="light dark">
   <!-- アプリとして入れたときの上の帯の色（起動後は design/theme.css の --color-statusbar に自動で合わせます） -->
@@ -34,6 +34,7 @@
         <button type="button" class="tab" role="tab" data-tab="spend" aria-selected="true">支出</button>
         <button type="button" class="tab" role="tab" data-tab="summary" aria-selected="false">集計</button>
         <button type="button" class="tab" role="tab" data-tab="cards" aria-selected="false">クレジット</button>
+        <button type="button" class="tab" role="tab" data-tab="accounts" aria-selected="false">口座</button>
         <button type="button" class="tab" role="tab" data-tab="settings" aria-selected="false">設定</button>
       </nav>
       <div class="month-nav" id="month-nav">
@@ -73,6 +74,11 @@
       <!-- ===== クレジット ===== -->
       <section class="view" data-view="cards" aria-label="クレジット">
         <div id="cards-body"></div>
+      </section>
+
+      <!-- ===== 口座：銀行口座の残高・入金・出金、電子マネーのチャージ ===== -->
+      <section class="view" data-view="accounts" aria-label="口座">
+        <div id="accounts-body"></div>
       </section>
 
       <!-- ===== 設定 ===== -->
@@ -134,9 +140,9 @@
             </section>
 
             <section class="panel">
-              <div class="panel-head"><h2 class="panel-title">口座（口座引落の分け方）</h2></div>
+              <div class="panel-head"><h2 class="panel-title">銀行口座</h2></div>
               <div class="panel-body panel-pad">
-                <p class="note">月初の「口座引落」の表は、ここに登録した口座ごとに分かれます（例：JA・ゆうちょ・北洋）。</p>
+                <p class="note">登録すると「口座」タブで入金・出金と残高を管理できます。月初の固定費の「口座引落」の分け方にも使います（例：JA・ゆうちょ・北洋）。</p>
                 <ul class="cat-list" id="account-list"></ul>
                 <button type="button" class="btn btn-ghost" id="add-account-btn"><span class="icon icon-plus icon-s" aria-hidden="true"></span>口座を追加</button>
               </div>
