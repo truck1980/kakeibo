@@ -460,8 +460,7 @@
     paymentId: CASH_ID,  // 入力中の支払い方法（記録したあとも残す）
     date: todayStr(),    // 入力中の日付
     today: todayStr(),
-    viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計で見ている月
-    billMonth: null,  // クレジットの画面で見ている月（使った月。空なら今月）
+    viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計・クレジットで共通の、見ている月
     sum: { range: 'month', cat: '', pay: '', store: '', by: 'cat' },  // 集計の画面の条件
     acc: { filter: '' },   // 口座の画面の履歴で絞っている口座・電子マネー（'acc:ID' / 'pay:ID'・空＝すべて）
   };
@@ -1444,8 +1443,8 @@
     }
 
     const range = monthRange();
-    const key = ui.billMonth || monthOf(ui.today);
-    const go = (k) => { ui.billMonth = k === monthOf(ui.today) ? null : k; renderCards(); };
+    const key = ui.viewMonth;
+    const go = (k) => { ui.viewMonth = k; renderAll(); };
 
     // 次の引き落とし（カードごとに、これから来るいちばん近い1回）
     const bills = upcomingBills();
