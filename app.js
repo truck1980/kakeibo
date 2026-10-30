@@ -391,6 +391,12 @@
       }
       moves.push(mv);
     }
+    // 基準日より前の日付でチャージしていたら、数えられるように基準日をその日まで前に戻す
+    for (const mv of moves) {
+      if (mv.type !== 'charge') continue;
+      const pay = payments.find((x) => x.id === mv.payId);
+      if (pay && pay.openingDate && mv.date < pay.openingDate) pay.openingDate = mv.date;
+    }
     const st = obj.settings || {};
     return {
       version: 3,
@@ -1661,10 +1667,16 @@
         }
         if (isNew) data.moves.push(out);
         else data.moves[data.moves.findIndex((m) => m.id === mv.id)] = out;
+        // 基準日より前の日付のチャージは数えられないので、電子マネーの基準日をその日まで前に戻す
+        let moved = '';
+        if (out.type === 'charge') {
+          const pay = payById(out.payId);
+          if (pay.openingDate && out.date < pay.openingDate) { pay.openingDate = out.date; moved = `（${pay.name}の基準日を${fmtDate(out.date)}に変えました）`; }
+        }
         save();
         closeSheet();
         renderAll();
-        showToast(isNew ? `${MOVE_LABEL[out.type]}を記録しました` : `${MOVE_LABEL[out.type]}を直しました`);
+        showToast(`${isNew ? `${MOVE_LABEL[out.type]}を記録しました` : `${MOVE_LABEL[out.type]}を直しました`}${moved}`);
       },
     }, isNew ? '追加' : '保存');
     const footer = [saveBtn];
