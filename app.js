@@ -1117,7 +1117,7 @@
 
     function addRow(rec) {
       let cur = rec;   // 保存済みの記録（空き行は null）
-      const dateIn = h('input', { class: 'cell-input', type: 'text', autocomplete: 'off', placeholder: '例 10.30', 'aria-label': '日付' });
+      const dateIn = h('input', { class: 'cell-input', type: 'text', autocomplete: 'off', 'aria-label': '日付' });
       const catIn = h('input', { class: 'cell-input', type: 'text', list: 'cat-choice-list', autocomplete: 'off', placeholder: '例 しょ', 'aria-label': '項目' });
       const storeIn = h('input', { class: 'cell-input', type: 'text', maxlength: '20', list: 'store-list', autocomplete: 'off', 'aria-label': '購入先' });
       const memoIn = h('input', { class: 'cell-input', type: 'text', maxlength: '40', list: 'memo-list', autocomplete: 'off', 'aria-label': '品目' });
