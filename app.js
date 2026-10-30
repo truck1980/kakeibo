@@ -1058,11 +1058,11 @@
   const SPEND_BLANK_ROWS = 8;
   const signedYen = (n) => `${n < 0 ? '−' : ''}${yen(Math.abs(n))}`;
   const isDateStr = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v);
-  const slashDate = (iso) => { const [y, m, d] = iso.split('-'); return `${y}/${Number(m)}/${Number(d)}`; };
+  const slashDate = (iso) => { const [y, m, d] = iso.split('-'); return `${y}/${Number(m)}/${Number(d)}(${'日月火水木金土'[new Date(Number(y), Number(m) - 1, Number(d)).getDay()]})`; };
 
   // 手で打った日付（10.30　11/1　2026.11.1　12日 など）を「YYYY-MM-DD」にする。読み取れなければ空
   function parseDateText(text, viewKey) {
-    const s = String(text || '').normalize('NFKC').trim().replace(/[年月.\-]/g, '/').replace(/日/g, '').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+    const s = String(text || '').normalize('NFKC').replace(/\([^)]*\)/g, '').trim().replace(/[年月.\-]/g, '/').replace(/日/g, '').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
     if (!s) return '';
     let parts = s.split('/');
     if (!parts.every((p) => /^\d+$/.test(p))) return '';
