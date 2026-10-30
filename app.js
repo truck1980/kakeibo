@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '6.0.0';
+  const APP_VERSION = '6.1.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
@@ -19,13 +19,24 @@
   const THEMES = ['auto', 'light', 'dark'];  // 画面の明るさ（自動＝Windowsの設定に合わせる）
 
   // 手書きの家計簿（週の支出・予算の表）の項目。「その他」は削除できない項目
+  // 4つ目は「よみ」（支出の表で「しょ」と打つと食費になる、など項目を打って選ぶときに使う）
   const DEFAULT_CATEGORIES = [
-    ['food', '食費', '🍚'], ['sake', '酒', '🍺'], ['eatout', '外食', '🍜'], ['daily', '日用品', '🧻'],
-    ['bu', 'ブー', '🐶'], ['beauty', '美容', '💄'], ['clothes', '衣服', '👕'], ['goods', '雑貨', '🧴'],
-    ['gas', 'ガソリン', '⛽'], ['car', '車', '🚗'], ['medical', '医療', '💊'], ['hobby', '趣味', '🎮'],
-    ['fun', '娯楽', '🎬'], ['social', '交際', '🎁'], ['stationery', '文房具', '📚'], ['furniture', '家具', '🏠'],
-    ['appliance', '家電', '💻'], ['kerosene', '灯油', '🔥'], [OTHER_ID, 'その他', '📦'],
-  ].map(([id, name, icon], i) => ({ id, name, icon, color: (i % COLOR_COUNT) + 1 }));
+    ['food', '食費', '🍚', 'しょくひ'], ['sake', '酒', '🍺', 'さけ'], ['eatout', '外食', '🍜', 'がいしょく'], ['daily', '日用品', '🧻', 'にちようひん'],
+    ['bu', 'ブー', '🐶', 'ぶー'], ['beauty', '美容', '💄', 'びよう'], ['clothes', '衣服', '👕', 'いふく'], ['goods', '雑貨', '🧴', 'ざっか'],
+    ['gas', 'ガソリン', '⛽', 'がそりん'], ['car', '車', '🚗', 'くるま'], ['medical', '医療', '💊', 'いりょう'], ['hobby', '趣味', '🎮', 'しゅみ'],
+    ['fun', '娯楽', '🎬', 'ごらく'], ['social', '交際', '🎁', 'こうさい'], ['stationery', '文房具', '📚', 'ぶんぼうぐ'], ['furniture', '家具', '🏠', 'かぐ'],
+    ['appliance', '家電', '💻', 'かでん'], ['kerosene', '灯油', '🔥', 'とうゆ'], [OTHER_ID, 'その他', '📦', 'そのた'],
+  ].map(([id, name, icon, yomi], i) => ({ id, name, icon, yomi, color: (i % COLOR_COUNT) + 1 }));
+
+  // 文字をそろえる（全角・半角の違い、カタカナ→ひらがな）。項目のよみの照合と、購入先の名前のそろえに使う
+  function toHiragana(s) {
+    return String(s || '').normalize('NFKC').replace(/[ァ-ヶ]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+  }
+  function cleanStore(s) {
+    return String(s || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 20);
+  }
+  const storeKey = (s) => (s ? s.toLowerCase() : STORE_NONE);
+  const STORE_NONE = '__none';
 
   // 前の版（2.x・3.0.0）の初期の項目のままのデータは、手書きの項目に入れかえる（記録は近い項目に移す）
   const OLD_DEFAULT_NAMES = { food: '食費', daily: '日用品', transport: '交通費', eatout: '外食', hobby: '趣味', clothes: '衣服', medical: '医療', utility: '光熱費', phone: '通信費', other: 'その他' };
@@ -225,10 +236,14 @@
     for (const c of catsIn) {
       if (!c || typeof c.id !== 'string' || typeof c.name !== 'string' || seen.has(c.id)) continue;
       seen.add(c.id);
+      const catName = c.name.trim().slice(0, 10) || '（名前なし）';
+      // よみが入っていない（6.0.0 までの）項目は、初期の項目と同じ名前のときだけ初期のよみを入れる
+      const def = DEFAULT_CATEGORIES.find((d) => d.id === c.id && d.name === catName);
       categories.push({
         id: c.id,
-        name: c.name.trim().slice(0, 10) || '（名前なし）',
+        name: catName,
         icon: typeof c.icon === 'string' && c.icon ? c.icon : '📦',
+        yomi: typeof c.yomi === 'string' ? toHiragana(c.yomi).trim().slice(0, 20) : (def ? def.yomi : ''),
         color: clampColor(c.color),
       });
     }
@@ -293,6 +308,7 @@
         categoryId: seen.has(catId) ? catId : OTHER_ID,
         paymentId: payIds.has(r.paymentId) ? r.paymentId : CASH_ID,
         date: r.date,
+        store: cleanStore(r.store),
         memo: typeof r.memo === 'string' ? r.memo.slice(0, 40) : '',
         createdAt: Number(r.createdAt) || 0,
       });
@@ -439,7 +455,7 @@
     today: todayStr(),
     viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計で見ている月
     billMonth: calMonthOf(todayStr()),  // カードの引き落とし画面で見ている月
-    sum: { range: 'month', cat: '', pay: '', by: 'cat' },  // 集計の画面の条件
+    sum: { range: 'month', cat: '', pay: '', store: '', by: 'cat' },  // 集計の画面の条件
     acc: { filter: '' },   // 口座の画面の履歴で絞っている口座・電子マネー（'acc:ID' / 'pay:ID'・空＝すべて）
   };
 
@@ -706,6 +722,7 @@
           { v: fmtDate(r.date), cls: 't-date' },
           { v: h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name) },
           !opt.hidePay && { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name), cls: 't-pay' },
+          { v: r.store || '', cls: 't-memo', title: r.store || null },
           { v: r.memo, cls: 't-memo', title: r.memo || null },
           { num: true, v: money(r.amount) },
         ].filter(Boolean),
@@ -713,7 +730,7 @@
     });
     const head = [
       { t: opt.dateLabel || '日付' }, { t: '項目' },
-      !opt.hidePay && { t: '支払い方法' }, { t: opt.memoLabel || 'メモ' }, { t: '金額', num: true },
+      !opt.hidePay && { t: '支払い方法' }, { t: '購入先' }, { t: opt.memoLabel || 'メモ' }, { t: '金額', num: true },
     ].filter(Boolean);
     const foot = opt.total && [{ v: `${recs.length}件`, span: head.length - 1 }, { num: true, v: money(sumAmount(recs)) }];
     return table(head, rows, foot);
@@ -1041,6 +1058,45 @@
   const SPEND_BLANK_ROWS = 8;
   const signedYen = (n) => `${n < 0 ? '−' : ''}${yen(Math.abs(n))}`;
   const isDateStr = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const slashDate = (iso) => { const [y, m, d] = iso.split('-'); return `${y}/${Number(m)}/${Number(d)}`; };
+
+  // 手で打った日付（10.30　11/1　2026.11.1　12日 など）を「YYYY-MM-DD」にする。読み取れなければ空
+  function parseDateText(text, viewKey) {
+    const s = String(text || '').normalize('NFKC').trim().replace(/[年月.\-]/g, '/').replace(/日/g, '').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+    if (!s) return '';
+    let parts = s.split('/');
+    if (!parts.every((p) => /^\d+$/.test(p))) return '';
+    if (parts.length === 1) {
+      if (parts[0].length === 4) parts = [parts[0].slice(0, 2), parts[0].slice(2)];          // 1030 → 10月30日
+      else parts = [viewKey.slice(0, 4), viewKey.slice(5, 7), parts[0]];                       // 15 → 表の月の15日
+    }
+    let [y, m, d] = parts.length === 2 ? [null, ...parts] : parts;
+    m = Number(m); d = Number(d);
+    const todayD = new Date(`${ui.today}T00:00:00`);
+    if (y === null) {
+      y = todayD.getFullYear();
+      // 12月に「1.5」と打ったら来年…ではなく、先すぎる日付（半年より先）は去年のこととして扱う
+      if (new Date(y, m - 1, d) - todayD > 180 * 86400000) y -= 1;
+    } else {
+      y = Number(y);
+      if (String(parts[0]).length <= 2) y += 2000;
+    }
+    const dt = new Date(y, m - 1, d);
+    if (y < 1990 || y > 2100 || dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return '';
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  // 手で打った項目（しょ → 食費）。ひとつに決まれば {id}、決まらなければ当てはまる項目の一覧
+  function resolveCategory(text) {
+    const q = toHiragana(text).replace(/^[^\p{L}\p{N}ー]+/u, '').trim();
+    if (!q) return { list: [] };
+    const exact = data.categories.filter((c) => toHiragana(c.name) === q || c.yomi === q);
+    if (exact.length === 1) return { id: exact[0].id };
+    const hit = data.categories.filter((c) => toHiragana(c.name).startsWith(q) || (c.yomi && c.yomi.startsWith(q)));
+    if (hit.length === 1) return { id: hit[0].id };
+    return { list: hit };
+  }
+  const catLabel = (c) => `${c.icon} ${c.name}`;
 
   function renderSpend() {
     const key = ui.viewMonth;
@@ -1052,7 +1108,7 @@
 
     const tbody = h('tbody');
     const totalTd = h('td', { class: 't-num' });
-    const countTd = h('td', { colspan: '3' });
+    const countTd = h('td', { colspan: '4' });
     const updateTotal = () => {
       const list = data.records.filter((r) => monthOf(r.date) === key);
       countTd.textContent = `${list.length}件　合計`;
@@ -1061,19 +1117,19 @@
 
     function addRow(rec) {
       let cur = rec;   // 保存済みの記録（空き行は null）
-      const dateIn = h('input', { class: 'cell-input', type: 'date', 'aria-label': '日付' });
-      const catSel = h('select', { class: 'cell-input', 'aria-label': '項目' },
-        h('option', { value: '' }, ''),
-        data.categories.map((c) => h('option', { value: c.id }, `${c.icon} ${c.name}`)));
+      const dateIn = h('input', { class: 'cell-input', type: 'text', autocomplete: 'off', placeholder: '例 10.30', 'aria-label': '日付' });
+      const catIn = h('input', { class: 'cell-input', type: 'text', list: 'cat-choice-list', autocomplete: 'off', placeholder: '例 しょ', 'aria-label': '項目' });
+      const storeIn = h('input', { class: 'cell-input', type: 'text', maxlength: '20', list: 'store-list', autocomplete: 'off', 'aria-label': '購入先' });
       const memoIn = h('input', { class: 'cell-input', type: 'text', maxlength: '40', list: 'memo-list', autocomplete: 'off', 'aria-label': '品目' });
       const amountIn = h('input', { class: 'cell-input num', type: 'text', inputmode: 'numeric', autocomplete: 'off', 'aria-label': '金額' });
       const paySel = h('select', { class: 'cell-input', 'aria-label': '支払い方法' },
         data.payments.map((p) => h('option', { value: p.id }, p.name)));
       const getAmt = attachAmountFormat(amountIn);
-      const fields = [dateIn, catSel, memoIn, amountIn, paySel];
+      const fields = [dateIn, catIn, storeIn, memoIn, amountIn, paySel];
 
-      dateIn.value = cur ? cur.date : lastDate;
-      catSel.value = cur ? cur.categoryId : '';
+      dateIn.value = cur ? slashDate(cur.date) : '';
+      catIn.value = cur ? catLabel(catById(cur.categoryId)) : '';
+      storeIn.value = cur ? cur.store || '' : '';
       memoIn.value = cur ? cur.memo : '';
       amountIn.value = cur ? yen(cur.amount) : '';
       paySel.value = cur ? cur.paymentId : lastPay;
@@ -1081,22 +1137,38 @@
       const delBtn = h('button', { type: 'button', class: 'icon-btn row-del', 'aria-label': 'この行を削除', title: 'この行を削除', hidden: !cur }, icon('close'));
       const td = (el, cls) => h('td', { class: cls || null }, el);
       const tr = h('tr', { class: cur ? '' : 'is-new' },
-        td(dateIn), td(catSel), td(memoIn), td(amountIn, 't-num'), td(paySel), td(delBtn, 't-del'));
+        td(dateIn), td(catIn), td(storeIn), td(memoIn), td(amountIn, 't-num'), td(paySel), td(delBtn, 't-del'));
 
       const commit = () => {
         const amount = getAmt();
-        const date = dateIn.value;
-        const categoryId = catSel.value;
+        // 日付：打った文字を読み取って「2026/10/30」の形に直す（読み取れないときは赤い行のまま）
+        const date = parseDateText(dateIn.value, key);
+        if (date && dateIn.value !== slashDate(date)) dateIn.value = slashDate(date);
+        // 項目：よみ・名前の先頭が合う項目がひとつなら、その項目に決める
+        let categoryId = '';
+        const catText = catIn.value.trim();
+        if (catText) {
+          const res = resolveCategory(catText);
+          if (res.id) {
+            categoryId = res.id;
+            const label = catLabel(catById(res.id));
+            if (catIn.value !== label) catIn.value = label;
+          } else if (document.activeElement !== catIn) {
+            showToast(res.list.length ? `「${catText}」に当てはまる項目が複数あります：${res.list.map((c) => c.name).join('・')}` : `「${catText}」に当てはまる項目がありません`);
+          }
+        }
+        const store = cleanStore(storeIn.value);
+        if (storeIn.value !== store) storeIn.value = store;
         const memo = memoIn.value.trim().slice(0, 40);
         const paymentId = paySel.value;
         const filled = amount > 0 && categoryId && isDateStr(date);
-        tr.classList.toggle('is-invalid', !filled && !!(amount || categoryId || memo));
+        tr.classList.toggle('is-invalid', !filled && !!(amount || catText || memo || store));
         if (!filled) return;
         if (cur) {
-          Object.assign(cur, { amount, categoryId, paymentId, date, memo });
+          Object.assign(cur, { amount, categoryId, paymentId, date, store, memo });
           save();
         } else {
-          const r = { id: newId(), amount, categoryId, paymentId, date, memo, createdAt: Date.now() };
+          const r = { id: newId(), amount, categoryId, paymentId, date, store, memo, createdAt: Date.now() };
           data.records.push(r);
           if (!save()) { data.records.pop(); return; }
           requestPersist();
@@ -1146,17 +1218,20 @@
     updateTotal();
 
     const memos = [...new Set(data.records.map((r) => r.memo).filter(Boolean))].slice(-300);
+    const stores = [...new Set(data.records.map((r) => r.store).filter(Boolean))].slice(-300);
     $('#spend-body').replaceChildren(
       panel(`${fmtMonth(key)}の支出`,
         h('button', { type: 'button', class: 'link-btn', onclick: () => { for (let i = 0; i < 5; i++) addRow(null); } }, '＋ 行を増やす'),
         h('div', { class: 'table-wrap' }, h('table', { class: 'table spend-grid' },
           h('thead', null, h('tr', null,
-            h('th', { class: 'c-date' }, '日付'), h('th', { class: 'c-cat' }, '項目'), h('th', { class: 'c-memo' }, '品目'),
+            h('th', { class: 'c-date' }, '日付'), h('th', { class: 'c-cat' }, '項目'), h('th', { class: 'c-store' }, '購入先'), h('th', { class: 'c-memo' }, '品目'),
             h('th', { class: 't-num c-amount' }, '金額'), h('th', { class: 'c-pay' }, '支払い方法'), h('th', { class: 'c-del' }, ''))),
           tbody,
           h('tfoot', null, h('tr', null, countTd, totalTd, h('td', { colspan: '2' }, ''))))),
-        h('p', { class: 'note note-pad' }, '日付・項目・品目・金額・支払い方法を入れると、その行が自動で記録されます（項目と金額が必要です）。Enterキーで次の欄、支払い方法のEnterで次の行へ進みます。入れた行は、あとから直接書きかえたり、右端の×で消したりできます。赤い行は、項目か金額が足りなくて、まだ記録されていません。')),
-      h('datalist', { id: 'memo-list' }, memos.map((m) => h('option', { value: m }))));
+        h('p', { class: 'note note-pad' }, '日付・項目・購入先・品目・金額・支払い方法を入れると、その行が自動で記録されます（日付・項目・金額が必要です）。日付は「10.30」「11/1」のように打てば今年の日付になります。項目は「しょ」（食費）や「しゅ」（趣味）のようによみの最初の字を打てば選ばれます（当てはまる項目が複数あるときは、もう少し打つか一覧から選びます）。購入先は同じ名前でそろえて入れると、集計で購入先ごとの合計が見られます。Enterキーで次の欄、支払い方法のEnterで次の行へ進みます。入れた行は、あとから直接書きかえたり、右端の×で消したりできます。赤い行は、項目か金額が足りなくて、まだ記録されていません。')),
+      h('datalist', { id: 'memo-list' }, memos.map((m) => h('option', { value: m }))),
+      h('datalist', { id: 'store-list' }, stores.map((m) => h('option', { value: m }))),
+      h('datalist', { id: 'cat-choice-list' }, data.categories.map((c) => h('option', { value: catLabel(c), label: c.yomi || '' }))));
   }
 
   // 項目名（食費・酒など）：押すと、その月のその項目の記録（金額・メモ）の一覧を出す
@@ -1173,24 +1248,25 @@
     const c = catById(catId);
     const list = data.records.filter((r) => r.categoryId === catId && monthOf(r.date) === key).sort(byDate);
     const body = [list.length
-      ? table([{ t: '日付' }, { t: '支払い方法' }, { t: 'メモ' }, { t: '金額', num: true }],
+      ? table([{ t: '日付' }, { t: '支払い方法' }, { t: '購入先' }, { t: 'メモ' }, { t: '金額', num: true }],
         list.map((r) => ({
           onClick: () => openRecordSheet(r, false),
           cells: [
             { v: fmtDate(r.date), cls: 't-date' },
             { v: h('span', { class: 'cell-pay' }, dot(payById(r.paymentId).color), payById(r.paymentId).name) },
+            { v: r.store || '', cls: 't-memo', title: r.store || null },
             { v: r.memo, cls: 't-memo', title: r.memo || null },
             { num: true, v: money(r.amount) },
           ],
         })),
-        [{ v: `${list.length}件`, span: 3 }, { num: true, v: money(sumAmount(list)) }])
+        [{ v: `${list.length}件`, span: 4 }, { num: true, v: money(sumAmount(list)) }])
       : emptyNote(`${fmtMonth(key)}の${c.name}の記録はまだありません`)];
     openSheet(`${fmtMonth(key)}　${c.icon} ${c.name}`, body, [
       h('button', {
         type: 'button', class: 'btn btn-primary',
         onclick: () => {
           const today = monthOf(ui.today) === key ? ui.today : periodOf(key).start;
-          openRecordSheet({ id: newId(), amount: 0, categoryId: catId, paymentId: ui.paymentId, date: today, memo: '', createdAt: Date.now() }, true);
+          openRecordSheet({ id: newId(), amount: 0, categoryId: catId, paymentId: ui.paymentId, date: today, store: '', memo: '', createdAt: Date.now() }, true);
         },
       }, '＋ 追加'),
     ]);
@@ -1221,10 +1297,16 @@
     if (s.pay && !data.payments.some((p) => p.id === s.pay)) s.pay = '';
     const set = (patch) => { Object.assign(s, patch); renderAll(); };
 
+    // 購入先は、書き方の違い（全角・半角、英字の大小）をそろえて同じ店として数える
+    const storeNames = new Map();   // そろえた名前 → 表に出す名前
+    for (const r of data.records) if (r.store && !storeNames.has(storeKey(r.store))) storeNames.set(storeKey(r.store), r.store);
+    if (s.store && s.store !== STORE_NONE && !storeNames.has(s.store)) s.store = '';
+
     const filtered = data.records.filter((r) =>
       (s.range === 'all' || monthOf(r.date) === key)
       && (!s.cat || r.categoryId === s.cat)
-      && (!s.pay || r.paymentId === s.pay));
+      && (!s.pay || r.paymentId === s.pay)
+      && (!s.store || storeKey(r.store) === s.store));
     const total = sumAmount(filtered);
 
     const catSel = selectEl([['', 'すべての項目'], ...data.categories.map((c) => [c.id, `${c.icon} ${c.name}`])], s.cat, '項目で絞る');
@@ -1232,38 +1314,44 @@
     const paySel = selectEl([['', 'すべての支払い方法'], ...data.payments.map((p) => [p.id, p.name])], s.pay, '支払い方法で絞る');
     paySel.addEventListener('change', () => set({ pay: paySel.value }));
 
+    const storeSel = selectEl([['', 'すべての購入先'], ...[...storeNames].sort((a, b) => a[1].localeCompare(b[1], 'ja')), [STORE_NONE, '（購入先なし）']], s.store, '購入先で絞る');
+    storeSel.addEventListener('change', () => set({ store: storeSel.value }));
+
     const controls = h('section', { class: 'panel' },
       h('div', { class: 'filter-bar' },
         field('期間', segEl([['month', fmtMonth(key)], ['all', '全期間']], s.range, '期間', (v) => set({ range: v }))),
         field('項目', catSel),
+        field('購入先', storeSel),
         field('支払い方法', paySel),
-        field('集計のしかた', segEl([['cat', '項目別'], ['pay', '支払い方法別'], ['date', '日付別'], ['month', '月別']], s.by, '集計のしかた', (v) => set({ by: v }))),
-        (s.cat || s.pay) && h('button', { type: 'button', class: 'btn btn-ghost btn-inline', onclick: () => set({ cat: '', pay: '' }) }, '絞りこみを外す')));
+        field('集計のしかた', segEl([['cat', '項目別'], ['store', '購入先別'], ['pay', '支払い方法別'], ['date', '日付別'], ['month', '月別']], s.by, '集計のしかた', (v) => set({ by: v }))),
+        (s.cat || s.pay || s.store) && h('button', { type: 'button', class: 'btn btn-ghost btn-inline', onclick: () => set({ cat: '', pay: '', store: '' }) }, '絞りこみを外す')));
 
     // グループごとの件数・金額
     const groups = new Map();
     for (const r of filtered) {
-      const k = s.by === 'cat' ? r.categoryId : s.by === 'pay' ? r.paymentId : s.by === 'date' ? r.date : monthOf(r.date);
+      const k = s.by === 'cat' ? r.categoryId : s.by === 'store' ? storeKey(r.store) : s.by === 'pay' ? r.paymentId : s.by === 'date' ? r.date : monthOf(r.date);
       const g = groups.get(k) || { n: 0, sum: 0 };
       g.n += 1;
       g.sum += r.amount;
       groups.set(k, g);
     }
     const keys = [...groups.keys()];
-    if (s.by === 'cat' || s.by === 'pay') keys.sort((a, b) => groups.get(b).sum - groups.get(a).sum);
+    if (s.by === 'cat' || s.by === 'pay' || s.by === 'store') keys.sort((a, b) => groups.get(b).sum - groups.get(a).sum);
     else keys.sort();
     const label = (k) => {
+      if (s.by === 'store') return k === STORE_NONE ? '（購入先なし）' : storeNames.get(k);
       if (s.by === 'cat') { const c = catById(k); return h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name); }
       if (s.by === 'pay') { const p = payById(k); return h('span', { class: 'cell-pay' }, dot(p.color), p.name); }
       if (s.by === 'date') return fmtDate(k);
       return fmtMonth(k);
     };
     const barColor = (k) => (s.by === 'cat' ? catColor(catById(k)) : s.by === 'pay' ? colorVar(payById(k).color) : 'var(--color-primary)');
-    const headName = { cat: '項目', pay: '支払い方法', date: '日付', month: '月' }[s.by];
+    const headName = { cat: '項目', store: '購入先', pay: '支払い方法', date: '日付', month: '月' }[s.by];
     const rows = keys.map((k) => {
       const g = groups.get(k);
       const pct = total > 0 ? (g.sum / total) * 100 : 0;
       const onClick = s.by === 'cat' ? () => set({ cat: s.cat === k ? '' : k })
+        : s.by === 'store' ? () => set({ store: s.store === k ? '' : k })
         : s.by === 'pay' ? () => set({ pay: s.pay === k ? '' : k })
           : s.by === 'month' ? () => { ui.viewMonth = k; set({ range: 'month' }); } : null;
       return {
@@ -1272,7 +1360,7 @@
       };
     });
     const groupPanel = panel(`${headName}ごとの合計`,
-      h('span', { class: 'panel-note' }, s.by === 'cat' || s.by === 'pay' ? '行を押すと、その条件で絞りこめます' : s.by === 'month' ? '行を押すと、その月を見られます' : ''),
+      h('span', { class: 'panel-note' }, s.by === 'cat' || s.by === 'pay' || s.by === 'store' ? '行を押すと、その条件で絞りこめます' : s.by === 'month' ? '行を押すと、その月を見られます' : ''),
       rows.length
         ? table([{ t: headName }, { t: '件数', num: true }, { t: '金額', num: true }, { t: '割合' }, { t: '', num: true }], rows,
           [{ v: '合計' }, { num: true, v: `${filtered.length}件` }, { num: true, v: money(total) }, { v: '', span: 2 }])
@@ -1737,6 +1825,8 @@
     dateInput.value = rec.date;
     const memoInput = h('input', { class: 'field-input', type: 'text', maxlength: '40', placeholder: 'なくてもOK', 'aria-label': 'メモ' });
     memoInput.value = rec.memo;
+    const storeInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', list: 'store-list', autocomplete: 'off', placeholder: 'なくてもOK', 'aria-label': '購入先' });
+    storeInput.value = rec.store || '';
 
     const footer = [
       h('button', {
@@ -1745,7 +1835,7 @@
           const value = amount.get();
           if (!value) { amount.input.focus(); showToast('金額を入力してください'); return; }
           const date = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : rec.date;
-          Object.assign(rec, { amount: value, categoryId: catSel.value, paymentId: paySel.value, date, memo: memoInput.value.trim().slice(0, 40) });
+          Object.assign(rec, { amount: value, categoryId: catSel.value, paymentId: paySel.value, date, store: cleanStore(storeInput.value), memo: memoInput.value.trim().slice(0, 40) });
           if (isNew) data.records.push(rec);
           save();
           closeSheet();
@@ -1777,7 +1867,8 @@
     openSheet(isNew ? '支出を追加' : '記録を直す', [
       field('金額', amount.el),
       h('div', { class: 'field-row' }, field('項目', catSel), field('支払い方法', paySel)),
-      h('div', { class: 'field-row' }, field('日付', dateInput), field('メモ（品名など）', memoInput)),
+      h('div', { class: 'field-row' }, field('日付', dateInput), field('購入先（店舗名）', storeInput)),
+      field('メモ（品名など）', memoInput),
     ], footer);
   }
 
@@ -1964,6 +2055,8 @@
     const previewName = h('span', { class: 'cat-preview-name' });
     const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '10', placeholder: '例：子ども', 'aria-label': 'カテゴリの名前' });
     nameInput.value = draft.name;
+    const yomiInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：こども', autocomplete: 'off', 'aria-label': 'よみ（ひらがな）' });
+    yomiInput.value = draft.yomi || '';
     const iconGrid = h('div', { class: 'icon-grid', role: 'group', 'aria-label': 'アイコン' });
 
     const draw = () => {
@@ -1981,6 +2074,8 @@
     const body = [
       h('div', { class: 'cat-preview' }, previewIcon, previewName),
       field('名前', nameInput),
+      field('よみ（ひらがな）', yomiInput),
+      h('p', { class: 'note' }, '支出の表の「項目」で、よみの最初の字（例：「こ」）を打つと、この項目が選ばれます。'),
       field('アイコン', iconGrid),
       field('色', swatchPicker(() => draft.color, (n) => { draft.color = n; draw(); })),
     ];
@@ -1996,8 +2091,9 @@
         if (data.categories.some((c) => c.name === name && (isNew || c.id !== cat.id))) {
           nameInput.focus(); showToast('同じ名前のカテゴリがあります'); return;
         }
-        if (isNew) data.categories.push({ id: `c${newId()}`, name, icon: draft.icon, color: draft.color });
-        else Object.assign(cat, { name, icon: draft.icon, color: draft.color });
+        const yomi = toHiragana(yomiInput.value).trim().slice(0, 20);
+        if (isNew) data.categories.push({ id: `c${newId()}`, name, icon: draft.icon, yomi, color: draft.color });
+        else Object.assign(cat, { name, icon: draft.icon, yomi, color: draft.color });
         save();
         closeSheet();
         renderAll();
@@ -2273,12 +2369,12 @@
       return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
     };
     const slash = (d) => d.replace(/-/g, '/');
-    const rows = [['日付', 'カテゴリ', '支払い方法', '金額', 'メモ', '引き落とし予定日']];
+    const rows = [['日付', 'カテゴリ', '購入先', '支払い方法', '金額', 'メモ', '引き落とし予定日']];
     const sorted = data.records.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
     for (const r of sorted) {
       const p = payById(r.paymentId);
       const bill = p.kind === 'card' ? slash(billInfo(p, billMonthOf(p, r.date)).payDate) : '';
-      rows.push([slash(r.date), catById(r.categoryId).name, p.name, r.amount, r.memo, bill]);
+      rows.push([slash(r.date), catById(r.categoryId).name, r.store || '', p.name, r.amount, r.memo, bill]);
     }
     // 先頭の ﻿（BOM）は、Excelで開いたときに文字化けしないための印
     const csv = '﻿' + rows.map((row) => row.map(cell).join(',')).join('\r\n');

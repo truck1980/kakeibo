@@ -461,11 +461,14 @@ select.field-input { padding-right: 0.5rem; cursor: pointer; }
 .table-grid tbody th.t-link:hover, .table-grid tbody th.t-link:focus-visible { background: var(--color-primary-soft); }
 
 /* ---- 支出（Excel の表のような入力表） ---- */
-.spend-grid th.c-date { width: 11.5rem; } .spend-grid th.c-cat { width: 13rem; } .spend-grid th.c-amount { width: 10rem; } .spend-grid th.c-pay { width: 12rem; } .spend-grid th.c-del { width: 3rem; }
+.spend-grid th.c-date { width: 11.5rem; } .spend-grid th.c-cat { width: 13rem; } .spend-grid th.c-amount { width: 10rem; } .spend-grid th.c-pay { width: 12rem; } .spend-grid th.c-del { width: 3rem; } .spend-grid th.c-store { width: 11rem; }
 .spend-grid td { padding: 0; border-right: 1px solid var(--color-border); }
 .spend-grid td:last-child { border-right: 0; }
 .spend-grid tfoot td { padding: 0.5rem 1rem; }
 .cell-input { width: 100%; height: 2.5rem; border: 0; border-radius: 0; background: transparent; padding: 0 0.625rem; font: inherit; color: inherit; }
+/* 項目だけ：打っても、右端の▼から一覧で選んでもよい（購入先・品目は打つだけで、▼は出さない） */
+.cell-input[list]::-webkit-calendar-picker-indicator { display: none; }
+.cell-input[list="cat-choice-list"]::-webkit-calendar-picker-indicator { display: block; opacity: 1; cursor: pointer; color: var(--color-text-sub); }
 .cell-input.num { text-align: right; font-family: var(--font-number); }
 .cell-input:focus { outline: 2px solid var(--color-primary); outline-offset: -2px; background: var(--color-surface); }
 .spend-grid tr.is-new .cell-input { background: var(--color-surface-2); }
@@ -477,7 +480,7 @@ select.field-input { padding-right: 0.5rem; cursor: pointer; }
 .filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1rem; padding: 0.875rem 1rem; }
 .filter-bar .field { margin: 0; }
 .filter-bar select.field-input { min-width: 12rem; }
-.spend-grid { min-width: 56rem; } .spend-grid th.c-memo { min-width: 14rem; }
+.spend-grid { min-width: 66rem; } .spend-grid th.c-memo { min-width: 14rem; }
 
 /* ---------- 口座（残高・入金・出金・チャージ） ---------- */
 .row-actions { display: inline-flex; gap: 0.5rem; justify-content: flex-end; }
