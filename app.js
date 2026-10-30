@@ -712,6 +712,43 @@
     return sel;
   }
 
+  // クレジットの画面で行を押したとき：その日・その購入先の記録を一覧で見せる（押すと直せる）
+  function openGroupRecords(g) {
+    const list = [...g.recs].sort(byDate);
+    openSheet(`${fmtDate(g.date)}　${g.store}`, [
+      table([{ t: '項目' }, { t: '品目' }, { t: '金額', num: true }],
+        list.map((r) => {
+          const c = catById(r.categoryId);
+          return {
+            onClick: () => openRecordSheet(r, false),
+            cells: [
+              { v: h('span', { class: 'cell-cat' }, h('span', { class: 'cat-emoji', 'aria-hidden': 'true' }, c.icon), c.name) },
+              { v: r.memo, cls: 't-memo', title: r.memo || null },
+              { num: true, v: money(r.amount) },
+            ],
+          };
+        }),
+        [{ v: `${list.length}件`, span: 2 }, { num: true, v: money(sumAmount(list)) }]),
+      h('p', { class: 'note' }, '行を押すと、項目・金額・購入先などを直せます。'),
+    ], []);
+  }
+
+  // クレジットの画面：日付・購入先ごとに、その日の使用合計金額だけを出す
+  function cardUseTable(recs) {
+    const groups = new Map();
+    for (const r of recs) {
+      const k = `${r.date}|${storeKey(r.store)}`;
+      const g = groups.get(k) || { date: r.date, store: r.store || '（購入先なし）', sum: 0, recs: [] };
+      g.sum += r.amount;
+      g.recs.push(r);
+      groups.set(k, g);
+    }
+    const list = [...groups.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    return table([{ t: '日付' }, { t: '購入先' }, { t: '使用合計金額', num: true }],
+      list.map((g) => ({ onClick: () => openGroupRecords(g), cells: [{ v: fmtDate(g.date), cls: 't-date' }, { v: g.store, cls: 't-memo', title: g.store }, { num: true, v: money(g.sum) }] })),
+      [{ v: `${list.length}件`, span: 2 }, { num: true, v: money(sumAmount(recs)) }]);
+  }
+
   // 支出の記録の表（支出・カードの画面で共通）。行を押すと直せる
   function recordTable(recs, opt = {}) {
     const rows = recs.map((r) => {
@@ -1448,7 +1485,7 @@
       h('b', { class: 'num' }, money(total)),
       h('p', { class: 'bill-meta' }, '引き落とし日 ', h('b', null, fmtDate(info.payDate)), `　対象：${fmtDate(info.start)}〜${fmtDate(info.end)}のご利用分　（${payRule(p)}）`),
       recs.length
-        ? recordTable(recs, { hidePay: true, dateLabel: '日付', memoLabel: '品名' })
+        ? cardUseTable(recs)
         : emptyNote('この期間のご利用はありません'));
   }
 
