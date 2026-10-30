@@ -34,6 +34,7 @@
         <button type="button" class="tab" role="tab" data-tab="spend" aria-selected="true">支出</button>
         <button type="button" class="tab" role="tab" data-tab="summary" aria-selected="false">集計</button>
         <button type="button" class="tab" role="tab" data-tab="cards" aria-selected="false">クレジット</button>
+        <button type="button" class="tab" role="tab" data-tab="utility" aria-selected="false">光熱費</button>
         <button type="button" class="tab" role="tab" data-tab="accounts" aria-selected="false">口座</button>
         <button type="button" class="tab" role="tab" data-tab="settings" aria-selected="false">設定</button>
       </nav>
@@ -74,6 +75,11 @@
       <!-- ===== クレジット ===== -->
       <section class="view" data-view="cards" aria-label="クレジット">
         <div id="cards-body"></div>
+      </section>
+
+      <!-- ===== 光熱費：登録した項目を月ごと・前年同月で比べる ===== -->
+      <section class="view" data-view="utility" aria-label="光熱費">
+        <div id="utility-body"></div>
       </section>
 
       <!-- ===== 口座：銀行口座の残高・入金・出金、電子マネーのチャージ ===== -->

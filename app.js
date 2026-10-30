@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '6.1.0';
+  const APP_VERSION = '6.2.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
@@ -51,6 +51,7 @@
   const MOVE_LABEL = { deposit: '入金', withdraw: '出金', charge: 'チャージ' };
   const BALANCE_DIGITS = 9;    // 残高の入力は9けたまで
   // カードを新しく登録するときの最初の値（末日締め・翌月27日払い）
+  const DEFAULT_VARI_ITEMS = ['電気代', '水道代', '灯油', '電話代'];
   const CARD_DEFAULT = { closingDay: END_OF_MONTH, payOffset: 1, payDay: 27 };
 
   const ICON_CHOICES = [
@@ -186,6 +187,7 @@
       fixeds: [],       // 月初の固定費 { id, month, name, amount, accountId（空＝現金支出）, day（0＝指定なし） }
       budgets: {},      // 項目ごとの月の予算 { 'YYYY-MM': { 項目id: 金額 } }
       varis: [],        // 月初の「毎月の金額がかわるもの」 { id, month, name, day, budget, actual }
+      variItems: DEFAULT_VARI_ITEMS.slice(),  // 「かわるもの」に登録した項目名（光熱費タブで月ごとに比べる）
       specials: [],     // 月初の特別支出 { id, month, name, day, source, amount }
       savings: [],      // 月初の貯蓄まとめ { id, month, name, amount }
       memos: {},        // 月ごとのメモ { 'YYYY-MM': 文字 }
@@ -397,6 +399,14 @@
       const pay = payments.find((x) => x.id === mv.payId);
       if (pay && pay.openingDate && mv.date < pay.openingDate) pay.openingDate = mv.date;
     }
+    // 登録した項目名。古いデータ（登録がない）は、標準の項目と、これまで入れた名前を引き継ぐ
+    const variItems = [];
+    const addVariItem = (n) => {
+      n = typeof n === 'string' ? n.trim().slice(0, 20) : '';
+      if (n && !variItems.includes(n) && variItems.length < 30) variItems.push(n);
+    };
+    if (Array.isArray(obj.variItems)) obj.variItems.forEach(addVariItem);
+    else { DEFAULT_VARI_ITEMS.forEach(addVariItem); varis.forEach((v) => addVariItem(v.name)); }
     const st = obj.settings || {};
     return {
       version: 3,
@@ -409,6 +419,7 @@
       fixeds,
       budgets,
       varis,
+      variItems,
       specials,
       savings,
       memos,
@@ -883,10 +894,17 @@
     const addVari = () => openLineSheet('vari', null);
     const variPanel = panel('毎月の金額がかわるもの', linkBtn('＋ 追加', addVari),
       table([{ t: '日付' }, { t: '内容' }, { t: '予算', num: true }, { t: '実績', num: true }],
-        padRows(varis.map((v) => ({
-          onClick: () => openLineSheet('vari', v),
-          cells: [{ v: fixedDayText(v), cls: 't-date' }, { v: v.name }, { num: true, v: v.budget ? yen(v.budget) : '' }, { num: true, v: v.actual ? yen(v.actual) : '' }],
-        })), 6, 4, addVari),
+        padRows([
+          ...varis.map((v) => ({
+            onClick: () => openLineSheet('vari', v),
+            cells: [{ v: fixedDayText(v), cls: 't-date' }, { v: v.name }, { num: true, v: v.budget ? yen(v.budget) : '' }, { num: true, v: v.actual ? yen(v.actual) : '' }],
+          })),
+          // 登録した項目は、まだ入れていない月にも並べる（押すと、その名前で入力できる）
+          ...data.variItems.filter((n) => !varis.some((v) => v.name === n)).map((n) => ({
+            onClick: () => openLineSheet('vari', null, n),
+            cells: [{ v: '' }, { v: h('span', { style: 'opacity:.55' }, n) }, { num: true, v: '' }, { num: true, v: '' }],
+          })),
+        ], 6, 4, addVari),
         [{ v: '合計', span: 2 }, { num: true, v: mark(yen(C), 'ⓒ') }, { num: true, v: mark(yen(D), 'ⓓ') }]));
 
     // ---- 今月のやりくり費
@@ -985,12 +1003,12 @@
     special: { list: 'specials', noun: '特別支出', day: true, source: true, namePh: '例：お祝い', needAmount: true },
     saving: { list: 'savings', noun: '貯蓄', namePh: '例：定期預金', needAmount: true },
   };
-  function openLineSheet(kind, item) {
+  function openLineSheet(kind, item, presetName) {
     const K = LINE_KINDS[kind];
     const isNew = !item;
     const key = ui.viewMonth;
     const nameInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: K.namePh, 'aria-label': '内容' });
-    nameInput.value = isNew ? '' : item.name;
+    nameInput.value = isNew ? (presetName || '') : item.name;
     const daySel = K.day ? dayOrNoneSelect(isNew ? 0 : item.day) : null;
     const sourceInput = K.source ? h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：ボーナス・貯金から', 'aria-label': '出所' }) : null;
     if (sourceInput) sourceInput.value = isNew ? '' : item.source;
@@ -1038,6 +1056,9 @@
       }, '削除'));
     }
     openSheet(isNew ? `${fmtMonth(key)}の${K.noun}を追加` : `${K.noun}を直す`, [
+      kind === 'vari' && data.variItems.length > 0 && h('div', { class: 'field' },
+        h('p', { class: 'note' }, '登録した項目から選べます（光熱費タブで月ごとに比べられます）'),
+        data.variItems.map((n) => h('button', { type: 'button', class: 'chip-btn', onclick: () => { nameInput.value = n; actual.input.focus(); } }, n))),
       field('内容', nameInput),
       daySel && field('日付', daySel),
       sourceInput && field('出所', sourceInput),
@@ -1478,6 +1499,89 @@
     body.replaceChildren(upcoming, head, blocks, note);
   }
 
+  /* ---------- 光熱費：登録した項目を月ごと・前年同月などで比べる ---------- */
+  // その月の実績（同じ名前の合計）。入っていない・0円なら null
+  function variActual(key, name) {
+    const total = data.varis.filter((v) => v.month === key && v.name === name).reduce((sum, v) => sum + v.actual, 0);
+    return total > 0 ? total : null;
+  }
+  const diffText = (n) => `${n > 0 ? '+' : n < 0 ? '−' : '±'}${yen(Math.abs(n))}円`;
+  const noData = { v: '—', num: true };
+  const moneyCell = (n) => (n == null ? noData : { v: money(n), num: true });
+  const diffCell = (a, b) => (a == null || b == null ? noData : { v: diffText(a - b), num: true });
+
+  function openVariItemSheet() {
+    const input = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：ガス代', 'aria-label': '項目の名前' });
+    const add = () => {
+      const name = input.value.trim();
+      if (!name) { input.focus(); showToast('項目の名前を入力してください'); return; }
+      if (data.variItems.includes(name)) { showToast('すでに登録されています'); return; }
+      data.variItems.push(name);
+      save();
+      closeSheet();
+      renderAll();
+      showToast(`「${name}」を登録しました`);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    openSheet('項目を登録', [
+      field('項目の名前', input),
+      h('p', { class: 'note' }, '登録すると、月初の「毎月の金額がかわるもの」を追加するときに選べます。名前が同じ分が、月ごとに集計されます。'),
+    ], [h('button', { type: 'button', class: 'btn btn-primary', onclick: add }, '登録')]);
+    input.focus();
+  }
+
+  function renderUtility() {
+    const body = $('#utility-body');
+    const key = ui.viewMonth;
+    const items = data.variItems;
+    const prev = shiftMonth(key, -1);
+    const lastYear = shiftMonth(key, -12);
+
+    const itemsPanel = panel('登録した項目', linkBtn('＋ 項目を登録', openVariItemSheet),
+      items.length
+        ? h('div', { class: 'panel-pad' }, items.map((name) => h('span', { style: 'margin:0 1.2rem .5rem 0;display:inline-flex;gap:.5rem;align-items:center' },
+          h('b', null, name),
+          linkBtn('削除', async () => {
+            const ok = await confirmDialog({ title: `「${name}」の登録をやめますか？`, message: '入れた金額は消えません。この画面に出なくなるだけです（もう一度登録すれば戻ります）。', okLabel: '登録をやめる', danger: true });
+            if (!ok) return;
+            data.variItems = data.variItems.filter((x) => x !== name);
+            save();
+            renderAll();
+          }))))
+        : emptyNote('項目がまだ登録されていません。', '「＋ 項目を登録」から、電気代・水道代などを登録してください。'));
+    if (!items.length) { body.replaceChildren(itemsPanel); return; }
+
+    // 登録した項目の合計（実績が入っている項目だけ）。1つも入っていなければ null
+    const sum = (k) => {
+      const vals = items.map((n) => variActual(k, n)).filter((x) => x != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+    };
+    const ratioCell = (cur, base) => (cur == null || base == null ? noData : { v: `${Math.round((cur / base) * 100)}%`, num: true });
+    const compareRow = (label, cur, p, l) => [{ v: label }, moneyCell(cur), moneyCell(p), diffCell(cur, p), moneyCell(l), diffCell(cur, l), ratioCell(cur, l)];
+
+    const compare = panel(`${fmtMonth(key)}の比べ方`, h('span', { class: 'panel-note' }, `前月＝${fmtMonth(prev)}／前年同月＝${fmtMonth(lastYear)}`),
+      table([{ t: '項目' }, { t: fmtMonth(key), num: true }, { t: '前月', num: true }, { t: '前月との差', num: true },
+        { t: '前年同月', num: true }, { t: '前年同月との差', num: true }, { t: '前年比', num: true }],
+      items.map((n) => ({ cells: compareRow(n, variActual(key, n), variActual(prev, n), variActual(lastYear, n)) })),
+      compareRow('合計', sum(key), sum(prev), sum(lastYear))));
+
+    // 12か月の推移（右の列に前年同月の合計と差）
+    const months = Array.from({ length: 12 }, (_, i) => shiftMonth(key, i - 11));
+    const trend = panel('月ごとの推移（12か月）', h('span', { class: 'panel-note' }, '月を押すと、その月に切りかわります'),
+      table([{ t: '月' }, ...items.map((n) => ({ t: n, num: true })), { t: '合計', num: true }, { t: '前年同月の合計', num: true }, { t: '前年同月との差', num: true }],
+        months.map((m) => {
+          const tot = sum(m);
+          const ly = sum(shiftMonth(m, -12));
+          return {
+            onClick: () => { ui.viewMonth = m; renderAll(); },
+            cells: [{ v: m === key ? `${fmtMonth(m)}（表示中）` : fmtMonth(m) }, ...items.map((n) => moneyCell(variActual(m, n))), moneyCell(tot), moneyCell(ly), diffCell(tot, ly)],
+          };
+        })));
+
+    const note = h('p', { class: 'note' }, '※ 月初の「毎月の金額がかわるもの」に入れた「実績」を、登録した項目の名前ごとに集計しています。実績が入っていない月は「—」で、比べられません。過去の月は、上の月の切りかえで戻って、月初タブから入れられます。');
+    body.replaceChildren(itemsPanel, compare, trend, note);
+  }
+
   // その家計簿の月に使った分（カードからのチャージも含む）
   function usedRecords(p, key) {
     return [...data.records, ...cardChargeRecords(p)].filter((r) => r.paymentId === p.id && monthOf(r.date) === key);
@@ -1715,7 +1819,7 @@
   }
 
   /* ---------- 表示する月の切りかえ ---------- */
-  const MONTH_TABS = ['start', 'spend', 'summary', 'accounts'];
+  const MONTH_TABS = ['start', 'spend', 'summary', 'cards', 'utility', 'accounts'];
 
   function renderMonthNav() {
     const key = ui.viewMonth;
@@ -2464,6 +2568,7 @@
     renderStart();
     renderSpend();
     renderCards();
+    renderUtility();
     renderAccounts();
     renderSummary();
     renderSettings();
