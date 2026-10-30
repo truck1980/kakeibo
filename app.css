@@ -449,6 +449,7 @@ select.field-input { padding-right: 0.5rem; cursor: pointer; }
 .card-memo-list { display: flex; flex-direction: column; gap: 1rem; padding-bottom: 0.5rem; }
 .card-memo-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.625rem 1rem 0.375rem; }
 .card-memo-rule { font-size: var(--font-size-s); color: var(--color-text-sub); }
+.card-memo-bill { margin: 0.5rem 1rem 0; }
 .card-memo .note-tight { margin: 0.25rem 1rem 0; }
 .formula { padding: 0.75rem 1rem 1rem; text-align: center; }
 .formula-text { font-size: var(--font-size-s); color: var(--color-text-sub); }

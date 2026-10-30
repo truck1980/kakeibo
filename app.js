@@ -461,7 +461,7 @@
     date: todayStr(),    // 入力中の日付
     today: todayStr(),
     viewMonth: monthOf(todayStr()),  // 月初・支出・月間集計で見ている月
-    billMonth: calMonthOf(todayStr()),  // カードの引き落とし画面で見ている月
+    billMonth: null,  // クレジットの画面で見ている月（使った月。空なら今月）
     sum: { range: 'month', cat: '', pay: '', store: '', by: 'cat' },  // 集計の画面の条件
     acc: { filter: '' },   // 口座の画面の履歴で絞っている口座・電子マネー（'acc:ID' / 'pay:ID'・空＝すべて）
   };
@@ -494,10 +494,11 @@
     return { recs, total, byCat, byPay };
   }
 
-  // 月を切りかえられる範囲：いちばん古い記録の月 〜 来月（来月分の月初を先に入れられるように）
+  // 月を切りかえられる範囲：5年前（過去の分を入れられるように。それより古い記録があればその月）〜 来月（来月分の月初を先に入れられるように）
+  const PAST_MONTHS = 60;
   function monthRange() {
     const cur = monthOf(ui.today);
-    let min = cur;
+    let min = shiftMonth(cur, -PAST_MONTHS);
     let max = shiftMonth(cur, 1);
     for (const r of data.records) {
       const k = monthOf(r.date);
@@ -536,11 +537,6 @@
     const start = addDays(dayOf(shiftMonth(stKey, -1), p.closingDay), 1);
     return { start, end, payDate: dayOf(billKey, p.payDay) };
   }
-  // 家計簿の月(key)のなかに引き落とし日が入る、カードの引き落とし月
-  function billKeyIn(p, key) {
-    const prev = shiftMonth(key, -1);
-    return monthOf(billInfo(p, prev).payDate) === key ? prev : key;
-  }
   // カードからのチャージ（電子マネーへ）は、支出ではないが引き落とし額には入る。表では記録と同じ形の「仮の記録」にする
   function cardChargeRecords(p) {
     return data.moves.filter((m) => m.type === 'charge' && m.fromType === 'card' && m.fromId === p.id).map((m) => ({
@@ -565,7 +561,7 @@
   }
   function billRange(list) {
     const cur = calMonthOf(ui.today);
-    let min = cur;
+    let min = shiftMonth(cur, -PAST_MONTHS);
     let max = cur;
     const consider = (k) => { if (k < min) min = k; if (k > max) max = k; };
     for (const p of list) consider(nextBillMonth(p));
@@ -812,7 +808,7 @@
     const specials = specialOf(key);
     const savings = savingOf(key);
     const cardList = cards();
-    const cardBill = cardList.reduce((sum, p) => sum + sumAmount(billRecords(p, billKeyIn(p, key))), 0);
+    const cardBill = cardList.reduce((sum, p) => sum + sumAmount(billRecords(p, key)), 0);
 
     // ⓐ〜ⓕ（手書きのページの記号と同じ）
     const A = sumAmount(incomes);
@@ -836,24 +832,25 @@
         padRows(incomes.map((i) => ({ onClick: () => openIncomeSheet(i), cells: [{ v: h('span', null, i.name, i.accountId && accountById(i.accountId) ? h('span', { class: 'tag' }, `入金：${accountById(i.accountId).name}`) : null) }, { num: true, v: yen(i.amount) }] })), 4, 2, addIncome),
         [{ v: mark('合計', 'ⓐ') }, { num: true, v: yen(A) }]));
 
-    // ---- クレジットカードのひかえ（使った月ごと。引き落としは翌月以降の「カード支払い」へ）
-    const cardBlocks = cardList.map((p) => {
-      const recs = data.records.filter((r) => r.paymentId === p.id && monthOf(r.date) === key).sort(byDate);
-      const addCard = () => showTab('spend');
-      return h('div', { class: 'card-memo' },
-        h('p', { class: 'card-memo-head' }, dot(p.color), h('b', null, `カード（${p.name}）`), h('span', { class: 'card-memo-rule' }, payRule(p))),
-        table([{ t: '日付' }, { t: '内容' }, { t: '金額', num: true }],
-          padRows(recs.map((r) => ({
-            onClick: () => openRecordSheet(r, false),
-            cells: [{ v: fmtDate(r.date), cls: 't-date' }, { v: r.memo || catById(r.categoryId).name }, { num: true, v: yen(r.amount) }],
-          })), 3, 3, addCard),
-          [{ v: '合計', span: 2 }, { num: true, v: yen(sumAmount(recs)) }]),
-        h('p', { class: 'note note-tight' }, `→ ${p.payOffset === 2 ? '翌々月' : '翌月'}の「カード支払い」へ`));
+    // ---- クレジットカードの引き落とし（この月に引き落とされる分。前の月に使った分が、ここに出る）
+    const billRows = cardList.map((p) => {
+      const bk = key;   // 「12月」の欄には、12月に引き落とされる分（引き落とし日が12月）を出す
+      const info = billInfo(p, bk);
+      return {
+        onClick: () => showTab('cards'),
+        cells: [
+          { v: h('span', { class: 'cell-pay' }, dot(p.color), p.name) },
+          { v: fmtDate(info.payDate), cls: 't-date' },
+          { v: `${md(info.start)}〜${md(info.end)}`, cls: 't-date' },
+          { num: true, v: yen(sumAmount(billRecords(p, bk))) },
+        ],
+      };
     });
-    const cardPanel = panel('クレジットカードのひかえ', h('span', { class: 'panel-note' }, '使った月の分。記録は「週の支出」で入れます'),
+    const cardPanel = panel('クレジットカードの引き落とし', h('span', { class: 'panel-note' }, 'この月に引き落とされる金額（前に使った分）'),
       cardList.length
-        ? h('div', { class: 'card-memo-list' }, cardBlocks)
-        : emptyNote('クレジットカードを登録すると、使った分がここに出ます。', linkBtn('カードを登録する ›', () => openPaymentSheet(null))));
+        ? table([{ t: 'カード' }, { t: '引き落とし日' }, { t: '使った期間' }, { t: '金額', num: true }], billRows,
+          [{ v: '合計', span: 3 }, { num: true, v: yen(cardBill) }])
+        : emptyNote('クレジットカードを登録すると、引き落とされる金額がここに出ます。', linkBtn('カードを登録する ›', () => openPaymentSheet(null))));
 
     // ---- 特別支出
     const addSpecial = () => openLineSheet('special', null);
@@ -1446,16 +1443,16 @@
       return;
     }
 
-    const range = billRange(list);
-    const key = ui.billMonth;
-    const go = (k) => { ui.billMonth = k; renderCards(); };
+    const range = monthRange();
+    const key = ui.billMonth || monthOf(ui.today);
+    const go = (k) => { ui.billMonth = k === monthOf(ui.today) ? null : k; renderCards(); };
 
     // 次の引き落とし（カードごとに、これから来るいちばん近い1回）
     const bills = upcomingBills();
     const upcoming = panel('これからの引き落とし', h('span', { class: 'panel-note' }, 'カードごとの、次の1回'),
       table([{ t: 'カード' }, { t: '引き落とし日' }, { t: '対象の期間' }, { t: '金額', num: true }, { t: '状態' }],
         bills.map((b) => ({
-          onClick: () => go(b.key),
+          onClick: () => go(monthOf(b.info.end)),
           cells: [
             { v: h('span', { class: 'cell-pay' }, dot(b.p.color), b.p.name) },
             { v: fmtDate(b.info.payDate), cls: 't-date' },
@@ -1466,33 +1463,48 @@
         })),
         [{ v: '合計', span: 3 }, { num: true, v: money(bills.reduce((sum, b) => sum + b.total, 0)) }, { v: '' }]));
 
-    // 月ごとの引き落とし
-    const monthTotal = list.reduce((sum, p) => sum + sumAmount(billRecords(p, key)), 0);
+    // 月ごとの使用額（使った月で集計。引き落とし日は、カードごとの欄に出す）
+    const monthTotal = list.reduce((sum, p) => sum + sumAmount(usedRecords(p, key)), 0);
     const nav = h('div', { class: 'month-nav' },
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': '前の月', disabled: key <= range.min, onclick: () => go(shiftMonth(key, -1)) }, icon('chevron-left')),
-      h('span', { class: 'month-nav-title' }, `${fmtMonth(key)}の引き落とし`),
+      h('span', { class: 'month-nav-title' }, `${fmtMonth(key)}に使った分`),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': '次の月', disabled: key >= range.max, onclick: () => go(shiftMonth(key, 1)) }, icon('chevron-right')),
-      key !== calMonthOf(ui.today) && h('button', { type: 'button', class: 'chip-btn', onclick: () => go(calMonthOf(ui.today)) }, '今月'));
+      key !== monthOf(ui.today) && h('button', { type: 'button', class: 'chip-btn', onclick: () => go(monthOf(ui.today)) }, '今月'));
     const head = h('div', { class: 'toolbar' },
-      h('p', { class: 'toolbar-text' }, `${fmtMonth(key)}の引き落とし合計：`, h('b', { class: 'num' }, money(monthTotal)), `（カード${list.length}枚）`),
+      h('p', { class: 'toolbar-text' }, `${fmtMonth(key)}の使用合計：`, h('b', { class: 'num' }, money(monthTotal)), `（カード${list.length}枚）`),
       nav);
     const blocks = h('div', { class: 'grid-2' }, list.map((p) => billBlock(p, key)));
-    const note = h('p', { class: 'note' }, '※ 使った日と、登録した締め日・支払日から計算した目安です。お店からの請求が遅れて次の月に回った分や、支払日が土日・祝日にあたるときの日付のずれは反映していません。');
+    const note = h('p', { class: 'note' }, '※ 家計簿の月（設定の月の締め日どおり）ごとに、使った日で集計しています。引き落とし日は、使った日と登録した締め日・支払日から計算した目安です。お店からの請求が遅れて次の月に回った分や、支払日が土日・祝日にあたるときの日付のずれは反映していません。');
 
     body.replaceChildren(upcoming, head, blocks, note);
   }
 
+  // その家計簿の月に使った分（カードからのチャージも含む）
+  function usedRecords(p, key) {
+    return [...data.records, ...cardChargeRecords(p)].filter((r) => r.paymentId === p.id && monthOf(r.date) === key);
+  }
+
   function billBlock(p, key) {
-    const info = billInfo(p, key);
-    const recs = billRecords(p, key).sort(byDate);
+    const recs = usedRecords(p, key).sort(byDate);
     const total = sumAmount(recs);
-    const st = billStatus(info, total);
-    return panel([dot(p.color), p.name, h('span', { class: `badge ${st.cls}` }, st.label)],
+    // 使った分が、いつ引き落とされるか（月の途中に締め日があると、2回に分かれる）
+    const bills = new Map();
+    for (const r of recs) { const bk = billMonthOf(p, r.date); bills.set(bk, (bills.get(bk) || 0) + r.amount); }
+    const lines = [...bills].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([bk, sum]) => {
+      const info = billInfo(p, bk);
+      const full = sumAmount(billRecords(p, bk));
+      const st = billStatus(info, full);
+      return h('p', { class: 'bill-meta' }, '引き落とし日 ', h('b', null, fmtDate(info.payDate)), '　',
+        h('b', { class: 'num' }, money(sum)), full !== sum ? `（この日の引き落とし全体 ${money(full)}）` : '', '　', h('span', { class: `badge ${st.cls}` }, st.label),
+        h('span', { class: 'card-memo-rule' }, `　対象：${fmtDate(info.start)}〜${fmtDate(info.end)}のご利用分`));
+    });
+    return panel([dot(p.color), p.name],
       h('b', { class: 'num' }, money(total)),
-      h('p', { class: 'bill-meta' }, '引き落とし日 ', h('b', null, fmtDate(info.payDate)), `　対象：${fmtDate(info.start)}〜${fmtDate(info.end)}のご利用分　（${payRule(p)}）`),
+      h('p', { class: 'bill-meta' }, payRule(p)),
+      ...lines,
       recs.length
         ? cardUseTable(recs)
-        : emptyNote('この期間のご利用はありません'));
+        : emptyNote('この月のご利用はありません'));
   }
 
   /* ---------- 口座（残高・入金・出金・チャージ） ---------- */
@@ -2476,11 +2488,9 @@
     const wasToday = ui.date === ui.today;
     const cur = monthOf(ui.today);
     const wasThisMonth = ui.viewMonth === cur;
-    const wasThisBill = ui.billMonth === calMonthOf(ui.today);
     ui.today = now;
     if (wasToday) ui.date = now;
     if (wasThisMonth) ui.viewMonth = monthOf(now);
-    if (wasThisBill) ui.billMonth = calMonthOf(now);
     renderAll();
   }
 
