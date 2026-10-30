@@ -1185,7 +1185,7 @@
       };
 
       tr.addEventListener('change', commit);
-      // Enter で次の欄へ。支払い方法で Enter を押すと、次の行の項目へ（日付は前の行と同じ）
+      // Enter で次の欄へ。支払い方法で Enter を押すと、次の行の日付へ
       tr.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || !fields.includes(e.target)) return;
         e.preventDefault();
@@ -1194,7 +1194,7 @@
         if (i < fields.length - 1) fields[i + 1].focus();
         else {
           const next = tr.nextElementSibling;
-          if (next) next.querySelectorAll('.cell-input')[1].focus();
+          if (next) next.querySelectorAll('.cell-input')[0].focus();
         }
       });
       delBtn.addEventListener('click', () => {
