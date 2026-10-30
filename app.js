@@ -26,7 +26,7 @@
     ['gas', 'ガソリン', '⛽', 'がそりん'], ['car', '車', '🚗', 'くるま'], ['medical', '医療', '💊', 'いりょう'], ['hobby', '趣味', '🎮', 'しゅみ'],
     ['fun', '娯楽', '🎬', 'ごらく'], ['social', '交際', '🎁', 'こうさい'], ['stationery', '文房具', '📚', 'ぶんぼうぐ'], ['furniture', '家具', '🏠', 'かぐ'],
     ['appliance', '家電', '💻', 'かでん'], ['kerosene', '灯油', '🔥', 'とうゆ'], [OTHER_ID, 'その他', '📦', 'そのた'],
-  ].map(([id, name, icon, yomi], i) => ({ id, name, icon, yomi, color: (i % COLOR_COUNT) + 1 }));
+  ].map(([id, name, icon, yomi], i) => ({ id, name, icon, yomi, tax: id === 'food' ? 8 : 10, color: (i % COLOR_COUNT) + 1 }));
 
   // 文字をそろえる（全角・半角の違い、カタカナ→ひらがな）。項目のよみの照合と、購入先の名前のそろえに使う
   function toHiragana(s) {
@@ -244,6 +244,7 @@
         name: catName,
         icon: typeof c.icon === 'string' && c.icon ? c.icon : '📦',
         yomi: typeof c.yomi === 'string' ? toHiragana(c.yomi).trim().slice(0, 20) : (def ? def.yomi : ''),
+        tax: c.tax === 8 || c.tax === 10 ? c.tax : (c.id === 'food' ? 8 : 10),   // 「＋」で税込にするときの税率
         color: clampColor(c.color),
       });
     }
@@ -1127,7 +1128,7 @@
       const amountIn = h('input', { class: 'cell-input num', type: 'text', autocomplete: 'off', 'aria-label': '金額' });
       const paySel = h('select', { class: 'cell-input', 'aria-label': '支払い方法' },
         data.payments.map((p) => h('option', { value: p.id }, p.name)));
-      const getAmt = attachAmountFormat(amountIn);
+      const getAmt = attachAmountFormat(amountIn, MAX_DIGITS, true);
       const fields = [dateIn, catIn, storeIn, memoIn, amountIn, paySel];
 
       dateIn.value = cur ? slashDate(cur.date) : '';
@@ -1143,7 +1144,8 @@
         td(dateIn), td(catIn), td(storeIn), td(memoIn), td(amountIn, 't-num'), td(paySel), td(delBtn, 't-del'));
 
       const commit = () => {
-        const amount = getAmt();
+        let amount = getAmt();
+        const taxPending = amountIn.value.includes('+');   // 「1000+」＝税抜の金額（税込にする）
         // 日付：打った文字を読み取って「2026/10/30」の形に直す（読み取れないときは赤い行のまま）
         const date = parseDateText(dateIn.value, key);
         if (date && dateIn.value !== slashDate(date)) dateIn.value = slashDate(date);
@@ -1160,11 +1162,19 @@
             showToast(res.list.length ? `「${catText}」に当てはまる項目が複数あります：${res.list.map((c) => c.name).join('・')}` : `「${catText}」に当てはまる項目がありません`);
           }
         }
+        // 税抜（＋つき）の金額は、項目の税率をかけて、1円未満は切り上げて税込にする
+        let taxWait = false;
+        if (taxPending && amount > 0) {
+          if (categoryId) {
+            amount = Math.min(Math.floor((amount * (100 + catById(categoryId).tax) + 99) / 100), 10 ** MAX_DIGITS - 1);
+            amountIn.value = yen(amount);
+          } else taxWait = true;   // 項目が決まったら、そのときに換算する
+        }
         const store = cleanStore(storeIn.value);
         if (storeIn.value !== store) storeIn.value = store;
         const memo = memoIn.value.trim().slice(0, 40);
         const paymentId = paySel.value;
-        const filled = amount > 0 && categoryId && isDateStr(date);
+        const filled = amount > 0 && categoryId && isDateStr(date) && !taxWait;
         tr.classList.toggle('is-invalid', !filled && !!(amount || catText || memo || store));
         if (!filled) return;
         if (cur) {
@@ -1231,7 +1241,7 @@
             h('th', { class: 't-num c-amount' }, '金額'), h('th', { class: 'c-pay' }, '支払い方法'), h('th', { class: 'c-del' }, ''))),
           tbody,
           h('tfoot', null, h('tr', null, countTd, totalTd, h('td', { colspan: '2' }, ''))))),
-        h('p', { class: 'note note-pad' }, '日付・項目・購入先・品目・金額・支払い方法を入れると、その行が自動で記録されます（日付・項目・金額が必要です）。日付は「10.30」「11/1」のように打てば今年の日付になります。項目は「しょ」（食費）や「しゅ」（趣味）のようによみの最初の字を打てば選ばれます（当てはまる項目が複数あるときは、もう少し打つか一覧から選びます）。購入先は同じ名前でそろえて入れると、集計で購入先ごとの合計が見られます。Enterキーで次の欄、支払い方法のEnterで次の行へ進みます。入れた行は、あとから直接書きかえたり、右端の×で消したりできます。赤い行は、項目か金額が足りなくて、まだ記録されていません。')),
+        h('p', { class: 'note note-pad' }, '日付・項目・購入先・品目・金額・支払い方法を入れると、その行が自動で記録されます（日付・項目・金額が必要です）。日付は「10.30」「11/1」のように打てば今年の日付になります。金額を「1000＋」のように打つと、税抜として項目の税率（初期は食費8%・ほか10%）をかけ、1円未満は切り上げた税込の金額になります。項目は「しょ」（食費）や「しゅ」（趣味）のようによみの最初の字を打てば選ばれます（当てはまる項目が複数あるときは、もう少し打つか一覧から選びます）。購入先は同じ名前でそろえて入れると、集計で購入先ごとの合計が見られます。Enterキーで次の欄、支払い方法のEnterで次の行へ進みます。入れた行は、あとから直接書きかえたり、右端の×で消したりできます。赤い行は、項目か金額が足りなくて、まだ記録されていません。')),
       h('datalist', { id: 'memo-list' }, memos.map((m) => h('option', { value: m }))),
       h('datalist', { id: 'store-list' }, stores.map((m) => h('option', { value: m }))),
       h('datalist', { id: 'cat-choice-list' }, data.categories.map((c) => h('option', { value: catLabel(c), label: c.yomi || '' }))));
@@ -1788,10 +1798,12 @@
   }
 
   // 金額の入力欄（数字以外は自動で取りのぞき、3けたごとに区切る）。金額を読み取る関数を返す
-  function attachAmountFormat(input, maxDigits = MAX_DIGITS) {
+  function attachAmountFormat(input, maxDigits = MAX_DIGITS, allowPlus = false) {
     const format = () => {
-      const digits = toHalfDigits(input.value).replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, maxDigits);
-      input.value = digits ? yen(Number(digits)) : '';
+      const raw = input.value.normalize('NFKC');
+      const digits = toHalfDigits(raw).replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, maxDigits);
+      // 支出の表では、金額のあとの「＋」（税抜 → 税込にする印）を残す
+      input.value = digits ? yen(Number(digits)) + (allowPlus && raw.includes('+') ? '+' : '') : '';
     };
     input.addEventListener('input', (e) => { if (!e.isComposing) format(); });
     input.addEventListener('compositionend', format);
@@ -2060,6 +2072,7 @@
     nameInput.value = draft.name;
     const yomiInput = h('input', { class: 'field-input', type: 'text', maxlength: '20', placeholder: '例：こども', autocomplete: 'off', 'aria-label': 'よみ（ひらがな）' });
     yomiInput.value = draft.yomi || '';
+    const taxSel = selectEl([['8', '8%（食料品など）'], ['10', '10%']], String(draft.tax || 10), '税率');
     const iconGrid = h('div', { class: 'icon-grid', role: 'group', 'aria-label': 'アイコン' });
 
     const draw = () => {
@@ -2079,6 +2092,8 @@
       field('名前', nameInput),
       field('よみ（ひらがな）', yomiInput),
       h('p', { class: 'note' }, '支出の表の「項目」で、よみの最初の字（例：「こ」）を打つと、この項目が選ばれます。'),
+      field('税率（金額に「＋」を付けたとき）', taxSel),
+      h('p', { class: 'note' }, '支出の表で金額を「1000＋」のように打つと、この税率をかけて税込の金額にします（1円未満は切り上げ）。'),
       field('アイコン', iconGrid),
       field('色', swatchPicker(() => draft.color, (n) => { draft.color = n; draw(); })),
     ];
@@ -2095,8 +2110,8 @@
           nameInput.focus(); showToast('同じ名前のカテゴリがあります'); return;
         }
         const yomi = toHiragana(yomiInput.value).trim().slice(0, 20);
-        if (isNew) data.categories.push({ id: `c${newId()}`, name, icon: draft.icon, yomi, color: draft.color });
-        else Object.assign(cat, { name, icon: draft.icon, yomi, color: draft.color });
+        if (isNew) data.categories.push({ id: `c${newId()}`, name, icon: draft.icon, yomi, tax: Number(taxSel.value) === 8 ? 8 : 10, color: draft.color });
+        else Object.assign(cat, { name, icon: draft.icon, yomi, tax: Number(taxSel.value) === 8 ? 8 : 10, color: draft.color });
         save();
         closeSheet();
         renderAll();
