@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '6.2.0';
+  const APP_VERSION = '6.3.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
@@ -48,7 +48,7 @@
   ];
   // bank＝銀行口座で払う（口座を登録すると自動で作られる）。other のうち prepaid＝チャージして使う電子マネー（残高を管理する）
   const PAY_KIND_LABEL = { cash: '現金', card: 'カード', bank: '口座', other: 'その他' };
-  const MOVE_LABEL = { deposit: '入金', withdraw: '出金', charge: 'チャージ' };
+  const MOVE_LABEL = { deposit: '入金', withdraw: '出金', charge: 'チャージ', cashin: '現金の入金', cashout: '現金の出金' };
   const BALANCE_DIGITS = 9;    // 残高の入力は9けたまで
   // カードを新しく登録するときの最初の値（末日締め・翌月27日払い）
   const DEFAULT_VARI_ITEMS = ['電気代', '水道代', '灯油', '電話代'];
@@ -181,6 +181,7 @@
       categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
       payments: DEFAULT_PAYMENTS.map((p) => ({ ...p })),
       accounts: [],     // 銀行口座 { id, name, openingBalance（基準日の始まりの残高）, openingDate }
+      cash: null,       // 手元の現金 { openingBalance（基準日の始まりの残高）, openingDate }（null＝管理していない）
       moves: [],        // 口座の入金・出金、電子マネーのチャージ { id, date, type, accountId, payId, fromType, fromId, amount, memo, createdAt }
       records: [],      // 支出の記録
       incomes: [],      // 月初の収入 { id, month, name, amount, accountId（入金される口座・空＝なし）, day（0＝指定なし） }
@@ -387,9 +388,13 @@
         if (mv.fromType === 'account' && !accIds.has(mv.fromId)) mv.fromType = 'none';
         if (mv.fromType === 'card' && !payments.some((x) => x.id === mv.fromId && x.kind === 'card')) mv.fromType = 'none';
         if (mv.fromType === 'cash' || mv.fromType === 'none') mv.fromId = '';
+      } else if (m.type === 'cashin' || m.type === 'cashout') {
+        // 手元の現金だけの出入り（口座は使わない）
       } else {
         if (!accIds.has(m.accountId)) continue;
         mv.accountId = m.accountId;
+        if (m.type === 'withdraw' && m.toCash === false) mv.toCash = false;   // 出金した分を手元の現金に入れない
+        if (m.type === 'deposit' && m.fromCash === true) mv.fromCash = true;   // 手元の現金から預け入れた
       }
       moves.push(mv);
     }
@@ -407,12 +412,15 @@
     };
     if (Array.isArray(obj.variItems)) obj.variItems.forEach(addVariItem);
     else { DEFAULT_VARI_ITEMS.forEach(addVariItem); varis.forEach((v) => addVariItem(v.name)); }
+    const cashIn = obj.cash && typeof obj.cash === 'object' ? obj.cash : null;
+    const cash = cashIn ? { openingBalance: balance0(cashIn.openingBalance), openingDate: isDate(cashIn.openingDate) ? cashIn.openingDate : todayStr() } : null;
     const st = obj.settings || {};
     return {
       version: 3,
       categories,
       payments,
       accounts,
+      cash,
       moves,
       records,
       incomes,
@@ -611,6 +619,21 @@
   function walletEvents(type, id) {
     const evs = [];
     const add = (date, delta, label, extra) => evs.push({ date, delta, label, ...extra });
+    if (type === 'cash') {
+      if (!data.cash) return [];
+      for (const m of data.moves) {
+        const accName = (accountOf(m.accountId) || {}).name || '口座';
+        if (m.type === 'cashin') add(m.date, m.amount, m.memo || '現金の入金', { move: m, createdAt: m.createdAt });
+        else if (m.type === 'cashout') add(m.date, -m.amount, m.memo || '現金の出金', { move: m, createdAt: m.createdAt });
+        else if (m.type === 'withdraw' && m.toCash !== false) add(m.date, m.amount, m.memo || `${accName}から引き出し`, { move: m, createdAt: m.createdAt });
+        else if (m.type === 'deposit' && m.fromCash) add(m.date, -m.amount, m.memo || `${accName}へ預け入れ`, { move: m, createdAt: m.createdAt });
+        else if (m.type === 'charge' && m.fromType === 'cash') add(m.date, -m.amount, `${payById(m.payId).name}へチャージ`, { move: m, createdAt: m.createdAt });
+      }
+      for (const r of data.records) {
+        if (r.paymentId === CASH_ID) add(r.date, -r.amount, `${catById(r.categoryId).name}${r.memo ? '：' + r.memo : ''}（支出）`, { auto: true, rec: r, createdAt: r.createdAt });
+      }
+      return evs.filter((e) => e.date >= data.cash.openingDate);
+    }
     if (type === 'acc') {
       const a = accountOf(id);
       if (!a) return [];
@@ -651,8 +674,8 @@
     }
     return evs.filter((e) => e.date >= p.openingDate);
   }
-  const walletOpening = (type, id) => (type === 'acc' ? accountOf(id).openingBalance : payById(id).openingBalance);
-  const walletName = (type, id) => (type === 'acc' ? accountOf(id).name : payById(id).name);
+  const walletOpening = (type, id) => (type === 'cash' ? data.cash.openingBalance : type === 'acc' ? accountOf(id).openingBalance : payById(id).openingBalance);
+  const walletName = (type, id) => (type === 'cash' ? '現金' : type === 'acc' ? accountOf(id).name : payById(id).name);
 
   // 日付の順（同じ日は 入った順・手入力のものが先）
   const byEventDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt || 0) - (b.createdAt || 0));
@@ -1675,13 +1698,40 @@
         : emptyNote('チャージして使う電子マネー（Suica・WAON・nanaco・PayPay など）がまだありません。',
           '追加すると、チャージ（入金）を記録して残高がわかり、「支出」で支払い方法に選ぶと残高が減ります。後払いのタイプは、設定の支払い方法のままで使えます。'));
 
+    // ---- 手元の現金
+    const cashId = walletKey('cash', 'cash');
+    let cashPanel;
+    if (data.cash) {
+      const bal = walletBalance('cash', 'cash');
+      const { inn, out } = flow(walletEvents('cash', 'cash'));
+      cashPanel = panel('現金', linkBtn('始まりの残高を直す', openCashSheet),
+        table([{ t: '' }, { t: '今日の残高', num: true }, { t: `${monthName(key)}の入金`, num: true }, { t: `${monthName(key)}の出金`, num: true }, { t: '' }],
+          [{
+            cls: ui.acc.filter === cashId ? 'is-current' : '', onClick: pick(cashId),
+            cells: [
+              { v: '現金' },
+              { num: true, cls: neg(bal), v: signedMoney(bal) },
+              { num: true, v: inn ? money(inn) : '' },
+              { num: true, v: out ? money(out) : '' },
+              { v: h('span', { class: 'row-actions' },
+                actBtn('入金', () => openMoveSheet(null, { type: 'cashin' })),
+                actBtn('出金', () => openMoveSheet(null, { type: 'cashout' }))) },
+            ],
+          }]));
+    } else {
+      cashPanel = panel('現金', null, emptyNote('手元の現金は、まだ管理していません。',
+        '始まりの残高と日付を入れると、現金で払った支出が自動で残高から引かれ、銀行からの引き出しが残高に足されます。',
+        h('button', { type: 'button', class: 'btn btn-primary btn-inline', onclick: openCashSheet }, icon('plus', 'icon-s'), '現金の管理をはじめる')));
+    }
+
     // ---- 入出金の履歴（見ている月）
     const wallets = [
+      ...(data.cash ? [{ type: 'cash', id: 'cash', key: cashId, name: '現金' }] : []),
       ...data.accounts.map((a) => ({ type: 'acc', id: a.id, key: walletKey('acc', a.id), name: a.name })),
       ...ppList.map((p) => ({ type: 'pay', id: p.id, key: walletKey('pay', p.id), name: p.name })),
     ];
     if (ui.acc.filter && !wallets.some((w) => w.key === ui.acc.filter)) ui.acc.filter = '';
-    const filterSel = selectEl([['', 'すべて'], ...wallets.map((w) => [w.key, w.name])], ui.acc.filter, '口座・電子マネーで絞る');
+    const filterSel = selectEl([['', 'すべて'], ...wallets.map((w) => [w.key, w.name])], ui.acc.filter, '口座・現金・電子マネーで絞る');
     filterSel.addEventListener('change', () => { ui.acc.filter = filterSel.value; renderAccounts(); });
     const shown = wallets.filter((w) => !ui.acc.filter || w.key === ui.acc.filter);
     const single = ui.acc.filter !== '';
@@ -1709,18 +1759,54 @@
     }));
     const inTotal = lines.reduce((sum, e) => sum + Math.max(e.delta, 0), 0);
     const outTotal = lines.reduce((sum, e) => sum + Math.max(-e.delta, 0), 0);
-    const histHead = [{ t: '日付' }, { t: '口座・電子マネー' }, { t: '内容' }, { t: '入金', num: true }, { t: '出金', num: true }, single && { t: '残高', num: true }].filter(Boolean);
+    const histHead = [{ t: '日付' }, { t: '口座・現金・電子マネー' }, { t: '内容' }, { t: '入金', num: true }, { t: '出金', num: true }, single && { t: '残高', num: true }].filter(Boolean);
     const addBtn = wallets.length ? linkBtn('＋ 入出金を追加', () => openMoveSheet(null, {
-      type: single && shown[0].type === 'pay' ? 'charge' : 'deposit',
+      type: single && shown[0].type === 'pay' ? 'charge' : single && shown[0].type === 'cash' ? 'cashin' : 'deposit',
       accountId: single && shown[0].type === 'acc' ? shown[0].id : '', payId: single && shown[0].type === 'pay' ? shown[0].id : '',
     })) : null;
     const histPanel = panel(`${fmtMonth(key)}の入出金の履歴`, [filterSel, addBtn],
       histRows.length
         ? table(histHead, histRows, [{ v: `${histRows.length}件`, span: 3 }, { num: true, v: money(inTotal) }, { num: true, v: money(outTotal) }, single && { v: '' }].filter(Boolean))
-        : emptyNote(wallets.length ? 'この月の入出金はありません' : '口座や電子マネーを登録すると、ここに入出金の履歴が出ます'),
-      h('p', { class: 'note note-pad' }, '「自動」の行は、月初の口座引落の固定費・カードの引き落とし・口座払いや電子マネーの支出から自動で入ります（行を押して直せるのは、手で入れた入出金と支出です）。日付が今日より先のものは「予定」で、今日の残高には入りません。'));
+        : emptyNote(wallets.length ? 'この月の入出金はありません' : '口座・現金・電子マネーを登録すると、ここに入出金の履歴が出ます'),
+      h('p', { class: 'note note-pad' }, '「自動」の行は、月初の口座引落の固定費・カードの引き落とし・口座払いや電子マネーや現金の支出から自動で入ります（行を押して直せるのは、手で入れた入出金と支出です）。日付が今日より先のものは「予定」で、今日の残高には入りません。'));
 
-    body.replaceChildren(h('div', { class: 'grid-2' }, accPanel, ppPanel), histPanel);
+    body.replaceChildren(h('div', { class: 'grid-2' }, accPanel, h('div', { class: 'col' }, cashPanel, ppPanel)), histPanel);
+  }
+
+  // 手元の現金の「始まりの残高」と基準日（過去の日付もOK）
+  function openCashSheet() {
+    const c = data.cash;
+    const balance = amountField(c ? c.openingBalance : 0, BALANCE_DIGITS);
+    const dateInput = h('input', { class: 'field-input', type: 'date', 'aria-label': '現金の基準日' });
+    dateInput.value = c ? c.openingDate : ui.today;
+    const footer = [h('button', {
+      type: 'button', class: 'btn btn-primary',
+      onclick: () => {
+        const openingDate = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : ui.today;
+        data.cash = { openingBalance: balance.get(), openingDate };
+        save();
+        closeSheet();
+        renderAll();
+        showToast(c ? '現金の始まりの残高を直しました' : '現金の管理をはじめました');
+      },
+    }, c ? '保存' : 'はじめる')];
+    if (c) {
+      footer.unshift(h('button', {
+        type: 'button', class: 'btn btn-danger',
+        onclick: async () => {
+          const ok = await confirmDialog({ title: '現金の管理をやめますか？', message: '現金の入金・出金の記録は残りますが、残高は出なくなります（支出の記録は消えません）。', okLabel: 'やめる', danger: true });
+          if (!ok) return;
+          data.cash = null;
+          save();
+          closeSheet();
+          renderAll();
+        },
+      }, '管理をやめる'));
+    }
+    openSheet(c ? '現金の始まりの残高を直す' : '現金の管理をはじめる', [
+      h('div', { class: 'field-row' }, field('残高（基準日の始まり）', balance.el), field('基準日', dateInput)),
+      h('p', { class: 'note' }, '基準日から後の「現金」払いの支出が自動で引かれ、銀行からの引き出しと手で入れた現金の入出金が反映されます。過去の日付から数えたいときは、その日の始まりの残高と、その日を入れてください。基準日より前の分は残高に入りません。'),
+    ], footer);
   }
 
   // 口座の入金・出金、電子マネーへのチャージを追加・直す
@@ -1744,6 +1830,10 @@
     ];
     const fromSel = selectEl(fromOptions, `${draft.fromType}:${draft.fromId || ''}`, 'チャージ元');
     if (fromSel.value !== `${draft.fromType}:${draft.fromId || ''}`) fromSel.value = fromOptions[0][0];
+    const cashBox = h('input', { type: 'checkbox', id: 'cash-link-check' });
+    cashBox.checked = isNew ? draft.type !== 'deposit' : draft.type === 'withdraw' ? draft.toCash !== false : !!draft.fromCash;
+    const cashLabel = h('label', { for: 'cash-link-check' }, '');
+    const cashField = h('div', { class: 'field' }, h('div', { style: 'display:flex;gap:.5rem;align-items:center' }, cashBox, cashLabel));
     const memoInput = h('input', { class: 'field-input', type: 'text', maxlength: '40', placeholder: 'なくてもOK（例：給料・ATM）', 'aria-label': 'メモ' });
     memoInput.value = isNew ? '' : mv.memo;
 
@@ -1752,16 +1842,21 @@
     const chargeFields = h('div', null, field('チャージする電子マネー', paySel), field('チャージ元', fromSel));
     const note = h('p', { class: 'note' });
     const draw = () => {
-      const types = [['deposit', '入金（口座へ）', data.accounts.length > 0], ['withdraw', '出金（口座から）', data.accounts.length > 0], ['charge', '電子マネーへチャージ', prepaids().length > 0]];
+      const types = [['deposit', '入金（口座へ）', data.accounts.length > 0], ['withdraw', '出金（口座から）', data.accounts.length > 0], ['charge', '電子マネーへチャージ', prepaids().length > 0],
+        ['cashin', '現金の入金', !!data.cash], ['cashout', '現金の出金', !!data.cash]];
       typeBox.replaceChildren(...types.map(([t, label, ok]) => h('button', {
         type: 'button', class: 'pay-btn', disabled: !ok, 'aria-pressed': String(draft.type === t),
         onclick: () => { draft.type = t; draw(); },
       }, label)));
-      accField.hidden = draft.type === 'charge';
+      accField.hidden = draft.type !== 'deposit' && draft.type !== 'withdraw';
       chargeFields.hidden = draft.type !== 'charge';
+      cashField.hidden = !data.cash || accField.hidden;
+      cashLabel.textContent = draft.type === 'withdraw' ? '出金した分を、手元の現金に入れる' : '手元の現金から預け入れた（現金が減る）';
       note.textContent = draft.type === 'deposit' ? '給料の振り込みなど、口座にお金が入ったときに記録します。'
-        : draft.type === 'withdraw' ? 'ATMでの引き出しや振り込みなど、口座からお金が出たときに記録します。手元の現金は管理していません。'
-          : '電子マネーの残高が増えます。チャージ元を銀行口座にすると、その口座の残高から引かれます。クレジットカードにすると、カードの引き落とし額に入ります（支出にはなりません）。';
+        : draft.type === 'withdraw' ? 'ATMでの引き出しや振り込みなど、口座からお金が出たときに記録します。ATMの引き出しは、手元の現金に入れる（チェックあり）と、現金の残高が増えます。振り込みなどはチェックを外します。'
+          : draft.type === 'cashin' ? 'お小遣いや現金でもらったお金など、手元の現金が増えたときに記録します。'
+            : draft.type === 'cashout' ? '現金をなくした・渡したなど、手元の現金が口座以外で減ったときに記録します（買い物は「支出」に入れます）。'
+              : '電子マネーの残高が増えます。チャージ元を銀行口座にすると、その口座の残高から引かれます。クレジットカードにすると、カードの引き落とし額に入ります（支出にはなりません）。';
     };
     draw();
 
@@ -1776,9 +1871,13 @@
           if (!paySel.value) { showToast('チャージする電子マネーを選んでください'); return; }
           const [fromType, ...rest] = fromSel.value.split(':');
           Object.assign(out, { payId: paySel.value, fromType, fromId: rest.join(':') });
+        } else if (draft.type === 'cashin' || draft.type === 'cashout') {
+          if (!data.cash) { showToast('先に現金の管理をはじめてください'); return; }
         } else {
           if (!accSel.value) { showToast('口座を選んでください'); return; }
           out.accountId = accSel.value;
+          if (data.cash && draft.type === 'withdraw' && !cashBox.checked) out.toCash = false;
+          if (data.cash && draft.type === 'deposit' && cashBox.checked) out.fromCash = true;
         }
         if (isNew) data.moves.push(out);
         else data.moves[data.moves.findIndex((m) => m.id === mv.id)] = out;
@@ -1812,7 +1911,7 @@
     openSheet(isNew ? '入金・出金・チャージを追加' : '入金・出金・チャージを直す', [
       field('種類', typeBox),
       h('div', { class: 'field-row' }, field('日付', dateInput), field('金額', amount.el)),
-      accField, chargeFields,
+      accField, chargeFields, cashField,
       field('メモ', memoInput),
       note,
     ], footer);
