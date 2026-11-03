@@ -5,11 +5,12 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '6.3.0';
+  const APP_VERSION = '6.4.0';
   const STORAGE_KEY = 'kantan-kakeibo-v1';
   const MAX_DIGITS = 7;        // 金額は最大 9,999,999円
   const COLOR_COUNT = 12;      // theme.css の --cat-1 〜 --cat-12
   const OTHER_ID = 'other';    // 削除できないカテゴリ（その他）
+  const NO_EXPENSE_ID = 'noexp';  // 削除できないカテゴリ（支出に含まない）。支払い方法の残高・引き落としには入るが、支出の合計・予算には入らない
   const CASH_ID = 'cash';      // 削除できない支払い方法（現金）
   const CASH_COLOR = 10;       // 現金の色（灰色）
   const END_OF_MONTH = 31;     // 締め日・支払日の「末日」
@@ -25,7 +26,7 @@
     ['bu', 'ブー', '🐶', 'ぶー'], ['beauty', '美容', '💄', 'びよう'], ['clothes', '衣服', '👕', 'いふく'], ['goods', '雑貨', '🧴', 'ざっか'],
     ['gas', 'ガソリン', '⛽', 'がそりん'], ['car', '車', '🚗', 'くるま'], ['medical', '医療', '💊', 'いりょう'], ['hobby', '趣味', '🎮', 'しゅみ'],
     ['fun', '娯楽', '🎬', 'ごらく'], ['social', '交際', '🎁', 'こうさい'], ['stationery', '文房具', '📚', 'ぶんぼうぐ'], ['furniture', '家具', '🏠', 'かぐ'],
-    ['appliance', '家電', '💻', 'かでん'], ['kerosene', '灯油', '🔥', 'とうゆ'], [OTHER_ID, 'その他', '📦', 'そのた'],
+    ['appliance', '家電', '💻', 'かでん'], ['kerosene', '灯油', '🔥', 'とうゆ'], [NO_EXPENSE_ID, '支出に含まない', '🚫', 'ししゅつにふくまない'], [OTHER_ID, 'その他', '📦', 'そのた'],
   ].map(([id, name, icon, yomi], i) => ({ id, name, icon, yomi, tax: id === 'food' ? 8 : 10, color: (i % COLOR_COUNT) + 1 }));
 
   // 文字をそろえる（全角・半角の違い、カタカナ→ひらがな）。項目のよみの照合と、購入先の名前のそろえに使う
@@ -254,6 +255,10 @@
     if (!seen.has(OTHER_ID)) {
       categories.push({ ...DEFAULT_CATEGORIES.find((c) => c.id === OTHER_ID) });
       seen.add(OTHER_ID);
+    }
+    if (!seen.has(NO_EXPENSE_ID)) {
+      categories.push({ ...DEFAULT_CATEGORIES.find((c) => c.id === NO_EXPENSE_ID) });
+      seen.add(NO_EXPENSE_ID);
     }
     const accIds = new Set();
     const accounts = [];
@@ -499,12 +504,15 @@
   function catIcon(c) {
     return h('span', { class: 'cat-icon', style: `--c:${catColor(c)}`, 'aria-hidden': 'true' }, c.icon);
   }
+  // 支出の合計・予算に入れる記録か（「支出に含まない」の項目は入れない。支払い方法の残高・引き落としには入る）
+  const countsAsExpense = (r) => r.categoryId !== NO_EXPENSE_ID;
   function monthStats(key) {
     const recs = data.records.filter((r) => monthOf(r.date) === key);
     let total = 0;
     const byCat = new Map();
     const byPay = new Map();
     for (const r of recs) {
+      if (!countsAsExpense(r)) continue;
       total += r.amount;
       byCat.set(r.categoryId, (byCat.get(r.categoryId) || 0) + r.amount);
       byPay.set(r.paymentId, (byPay.get(r.paymentId) || 0) + r.amount);
@@ -850,7 +858,7 @@
     const D = varis.reduce((sum, v) => sum + v.actual, 0);
     const spentBy = new Map();   // やりくり費の実績＝カード以外（現金・電子マネーなど）で使った分。カード分は翌月の「カード支払い」に入る
     for (const r of data.records) {
-      if (monthOf(r.date) !== key || payById(r.paymentId).kind === 'card') continue;
+      if (monthOf(r.date) !== key || payById(r.paymentId).kind === 'card' || !countsAsExpense(r)) continue;
       spentBy.set(r.categoryId, (spentBy.get(r.categoryId) || 0) + r.amount);
     }
     const budgets = budgetsOf(key);
@@ -943,7 +951,7 @@
     const budTotalTd = h('td', { class: 't-num' });
     const restTotalTd = h('td', { class: 't-num' });
     const judgeTotalTd = h('td', { class: 't-judge' });
-    const catRows = data.categories.map((c) => {
+    const catRows = data.categories.filter((c) => c.id !== NO_EXPENSE_ID).map((c) => {
       const spent = spentBy.get(c.id) || 0;
       const input = h('input', { class: 'field-input budget-input', type: 'text', inputmode: 'numeric', autocomplete: 'off', 'aria-label': `${c.name}の予算`, placeholder: '0' });
       const b0 = budgets[c.id] || 0;
@@ -1194,7 +1202,7 @@
     const totalTd = h('td', { class: 't-num' });
     const countTd = h('td', { colspan: '4' });
     const updateTotal = () => {
-      const list = data.records.filter((r) => monthOf(r.date) === key);
+      const list = data.records.filter((r) => monthOf(r.date) === key && countsAsExpense(r));
       countTd.textContent = `${list.length}件　合計`;
       totalTd.textContent = yen(sumAmount(list));
     };
@@ -1401,6 +1409,7 @@
     const filtered = data.records.filter((r) =>
       (s.range === 'all' || monthOf(r.date) === key)
       && (!s.cat || r.categoryId === s.cat)
+      && (countsAsExpense(r) || s.cat === NO_EXPENSE_ID)   // 「支出に含まない」は、その項目で絞ったときだけ出す
       && (!s.pay || r.paymentId === s.pay)
       && (!s.store || storeKey(r.store) === s.store));
     const total = sumAmount(filtered);
@@ -2363,6 +2372,9 @@
     if (!isNew && cat.id === OTHER_ID) {
       body.push(h('p', { class: 'note' }, 'このカテゴリは削除できません（カテゴリを削除したときの記録の移し先になります）。'));
     }
+    if (!isNew && cat.id === NO_EXPENSE_ID) {
+      body.push(h('p', { class: 'note' }, 'このカテゴリは削除できません。この項目の記録は支出の合計・予算に入りませんが、支払い方法（現金・口座・カード・電子マネー）の残高や引き落としには入ります。'));
+    }
 
     const saveBtn = h('button', {
       type: 'button', class: 'btn btn-primary',
@@ -2383,7 +2395,7 @@
     }, isNew ? '追加' : '保存');
 
     const footer = [saveBtn];
-    if (!isNew && cat.id !== OTHER_ID) {
+    if (!isNew && cat.id !== OTHER_ID && cat.id !== NO_EXPENSE_ID) {
       footer.unshift(h('button', {
         type: 'button', class: 'btn btn-danger',
         onclick: async () => {
